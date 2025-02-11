@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parse2fit"
+version = "0.1.0"
+description = "Framework to parse DFT outputs for FF fitting"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Ryan Morelock", email = "rym@ornl.gov" }
+]
+dependencies = [
+    "numpy",  # Add your dependencies here
+    "ase",
+    "pymatgen"
+]
+
+dynamic = ["requires-python"]  # This makes `requires-python` dynamic
+
+[tool.setuptools]
+packages = ["parse2fit"]  # Ensure this matches your package directory name
+

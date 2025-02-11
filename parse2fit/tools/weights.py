@@ -3,103 +3,109 @@ import random
 
 class WeightedSampler:
     def __init__(self, values, dist_params):
-        self.values = values
+        self.values = np.array(values, dtype=float) if values else []
         self.dist_params = dist_params
         
-        if self.dist_params.get('seed') is not None:
-            np.random.seed(self.dist_params.get('seed'))
+        # Set the seed for reproducibility
+        if 'seed' in self.dist_params:
+            np.random.seed(self.dist_params['seed'])
+            random.seed(self.dist_params['seed'])
 
     def sample(self):
-        dist_type = self.dist_params.get('type')
-        if dist_type == 'uniform':
-            return self.uniform_weighting()
-        elif dist_type == 'normal':
-            return self.normal_weighting()
-        elif dist_type == 'magnitude':
-            return self.magnitude_weighting()
-        elif dist_type == 'binary':
-            return self.binary_weighting()
-        else:
+        dist_type = self.dist_params.get('type', 'uniform')
+        method = {
+            'uniform': self.uniform_weighting,
+            'normal': self.normal_weighting,
+            'magnitude': self.magnitude_weighting,
+            'binary': self.binary_weighting,
+            'lognormal': self.lognormal_weighting
+        }.get(dist_type)
+
+        if method is None:
             raise ValueError(f"Unknown distribution type: {dist_type}")
 
+        return method()
+
     def set_max_min(self, min_val, max_val, values):
-        m = (max_val - min_val)/(np.max(values) - np.min(values))
-        b = min_val - m*(np.min(values))
-        ys = [int(m*val+b) for val in values]
-        correct_vals = []
-        for y in ys:
-            if y == max(ys):
-                correct_vals.append(float(max_val))
-            elif y == min(ys):
-                correct_vals.append(float(min_val))
-            else:
-                correct_vals.append(float(y))
-        return correct_vals
+        """ Scale values to a defined range [min_val, max_val]. """
+        if np.ptp(values) == 0:  # If all values are the same, return min_val for all
+            return np.full_like(values, min_val, dtype=float)
+        
+        scaled_values = np.rint(np.interp(values, (np.min(values), np.max(values)), (min_val, max_val)))
+        return np.round(scaled_values, 3)
+
+    def validate_params(self, required_keys):
+        """ Check that all required keys are present in dist_params. """
+        missing_keys = [key for key in required_keys if key not in self.dist_params or self.dist_params[key] is None]
+        if missing_keys:
+            #raise ValueError(f"Missing required dist_params keys for {self.dist_params.get('type', 'unknown')}: {missing_keys}")
+            raise ValueError(f"Missing required dist_params keys for method '{self.dist_params.get('type', 'unknown')}': {missing_keys}")
 
     def uniform_weighting(self):
-        min_val = self.dist_params.get('min')
-        max_val = self.dist_params.get('max')
-        spread = self.dist_params.get('spread') # positive integer
-        scale = self.dist_params.get('scale')
-        if len(self.values) == 1: 
-            return np.round(np.multiply(scale, [float(max_val)]), 3)
-        elif len(self.values) == 0:
+        """ Assign weights uniformly across a range. """
+        self.validate_params(['min', 'max', 'spread', 'scale'])
+        min_val, max_val, spread, scale = [float(self.dist_params[key]) for key in ['min', 'max', 'spread', 'scale']]
+
+        if len(self.values) == 0:
             return None
-        else:
-            values = list(np.random.randint(0, spread, size=len(self.values)))
-            weights = np.round(np.multiply(scale, self.set_max_min(min_val, max_val, values)), 3)
-            return weights
+        if len(self.values) == 1:
+            return np.round(scale * max_val, 3)
+
+        random_values = np.random.randint(0, spread, size=len(self.values))
+        return np.round(self.set_max_min(min_val, max_val, scale * random_values), 3)
 
     def normal_weighting(self):
-        # Return positive values from normal distribution
-        # Similar to Normal, but sparser
-        min_val = self.dist_params.get('min')
-        max_val = self.dist_params.get('max')
-        sigma = self.dist_params.get('sigma') # positive float
-        scale = self.dist_params.get('scale')
-        if len(self.values) == 1:
-            return np.round(np.multiply(scale, [float(max_val)]), 3)
-        elif len(self.values) == 0:
+        """ Assign weights based on a normal distribution. """
+        self.validate_params(['min', 'max', 'sigma', 'scale'])
+        min_val, max_val, sigma, scale = [float(self.dist_params[key]) for key in ['min', 'max', 'sigma', 'scale']]
+
+        if len(self.values) == 0:
             return None
-        else:
-            values = np.abs(np.random.normal(0, sigma, size=len(self.values)))
-            weights = np.round(np.multiply(scale, self.set_max_min(min_val, max_val, values)), 3)
-            return weights
+        if len(self.values) == 1:
+            return np.round(scale * max_val, 3)
+
+        normal_values = np.abs(np.random.normal(0, sigma, size=len(self.values)))
+        return np.round(self.set_max_min(min_val, max_val, scale * normal_values), 3)
 
     def magnitude_weighting(self):
-        # Larger magnitudes weighted more
-        min_val = self.dist_params.get('min')
-        max_val = self.dist_params.get('max')
-        kT = self.dist_params.get('kT') # float
-        scale = self.dist_params.get('scale')
-        if len(self.values) == 1:
-            return np.round(np.multiply(scale, [float(max_val)]), 3)
-        elif len(self.values) == 0:
+        """ Assign weights with higher values getting more weight. """
+        self.validate_params(['min', 'max', 'kT', 'scale'])
+        min_val, max_val, kT, scale = [float(self.dist_params[key]) for key in ['min', 'max', 'kT', 'scale']]
+
+        if len(self.values) == 0:
             return None
-        else:
-            starting_values = np.exp(np.array(np.divide(self.values, kT)))
-            shift_values = np.random.normal(0, np.min(starting_values)*0.68, size=len(self.values)) # Add noise to the distribution
-            values = [starting_values[i] + shift_values[i] for i in range(len(starting_values))]
-            weights = np.round(np.multiply(scale, self.set_max_min(min_val, max_val, values)), 3)
-            return weights
+        if len(self.values) == 1:
+            return np.round(scale * max_val, 3)
+
+        exp_values = np.exp(self.values / kT)
+        noise = np.random.normal(0, np.min(exp_values) * 0.68, size=len(self.values))
+        noisy_values = exp_values + noise
+        return np.round(self.set_max_min(min_val, max_val, scale * noisy_values), 3)
+
+    def lognormal_weighting(self):
+        """ Assign weights based on a lognormal distribution. """
+        self.validate_params(['min', 'max', 'mu', 'sigma', 'scale'])
+        min_val, max_val, mu, sigma, scale = [float(self.dist_params[key]) for key in ['min', 'max', 'mu', 'sigma', 'scale']]
+
+        if len(self.values) == 0:
+            return None
+        if len(self.values) == 1:
+            return np.round(scale * max_val, 3)
+
+        lognormal_values = np.random.lognormal(mu, sigma, size=len(self.values))
+        return np.round(self.set_max_min(min_val, max_val, scale * lognormal_values), 3)
 
     def binary_weighting(self):
-        # One value or other
-        min_val = self.dist_params.get('min')
-        max_val = self.dist_params.get('max')
-        split = float(self.dist_params.get('split')) # positive float between 0 and 1
-        number = 10**str(split)[::-1].find('.') # Give the split based on number of decimal places provided
-        low, high = np.rint(number * split), np.rint(number*(1.0-split))
-        low_vals, high_vals = [float(min_val) for i in range(int(low))], [float(max_val) for i in range(int(high))]
-        choose_from = low_vals + high_vals
-        if len(self.values) == 1:
-            return random.choices([float(min_val), float(max_val)], weights=[split, 1-split]) 
-            #return [float(max_val)]
-        elif len(self.values) == 0:
+        """ Assign weights as either `min_val` or `max_val` based on probability `split`. """
+        self.validate_params(['min', 'max', 'split'])
+        min_val, max_val, split = [float(self.dist_params[key]) for key in ['min', 'max', 'split']]
+        
+        if len(self.values) == 0:
             return None
-        else:
-            assignments = list(np.random.randint(low=0, high=number, size=len(self.values)))
-            weights = [choose_from[i] for i in assignments]
-            return weights
+        if len(self.values) == 1:
+            return np.round(random.choices([min_val, max_val], weights=[split, 1 - split]), 3)
+
+        choices = np.random.choice([min_val, max_val], size=len(self.values), p=[split, 1 - split])
+        return np.round(choices, 3)
 
 

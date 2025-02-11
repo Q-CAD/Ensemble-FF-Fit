@@ -10,6 +10,7 @@ import sys
 from multiprocessing import Pool
 from copy import deepcopy
 import re
+import logging
 
 warnings.filterwarnings('ignore')
 
@@ -44,224 +45,165 @@ class ReadWriteFactory(YamlManager):
 class ReaxRW():
     def __init__(self, config_dct):
         self.config_dct = config_dct
-        # Reax-specific configuration
-        
         self.write_options = ['energy', 'charges', 'forces', 'distances', 
                               'angles', 'dihedrals', 'lattice_vectors']
-        self.default_weights = self._set_default_weights(self.config_dct.get('default_weights'))
-        self.generation_parameters = self.config_dct.get('generation_parameters')
+        self.default_weights = self._set_default_weights(self.config_dct.get('default_weights', {}))
+        self.generation_parameters = self.config_dct.get('generation_parameters', {})
         self.geo, self.trainsetin = self._load_input_files()
-        self.input_paths = self.config_dct.get('input_paths')
-    
+        self.input_paths = self.config_dct.get('input_paths', {})
+
     def _load_input_files(self):
-        if 'input_directory' in self.generation_parameters:
-            geo_path = os.path.join(self.generation_parameters['input_directory'], 'geo')
-            trainsetin_path = os.path.join(self.generation_parameters['input_directory'], 'trainset.in')
-            if os.path.exists(geo_path):
-                geo = self.file_to_string(geo_path)
-            else:
-                print(f'input_directory tag supplied but {geo_path} does not exist! Using empty default')
-                geo = ''
-            if os.path.exists(trainsetin_path):
-                trainsetin = self.file_to_string(trainsetin_path)
-            else:
-                print(f'input_directory tag supplied but {trainsetin_path} does not exist! Using empty default')
-                trainsetin = ''
-        else:
-            geo, trainsetin = '', ''
-        return geo, trainsetin
+        """Loads geo and trainset.in files if input_directory is specified."""
+        input_dir = self.generation_parameters.get('input_directory', '')
+        geo_path = os.path.join(input_dir, 'geo')
+        trainsetin_path = os.path.join(input_dir, 'trainset.in')
+
+        def read_file(path, default_value=''):
+            if os.path.exists(path):
+                return self.file_to_string(path)
+            logging.warning(f"File {path} not found! Using empty default.")
+            return default_value
+
+        return read_file(geo_path), read_file(trainsetin_path)
 
     def _set_default_weights(self, weight_dct):
-        dct = {}
+        """Sets default weights for various properties."""
         default = {'split': 0.5, 'min': 0, 'max': 1, 'type': 'binary'}
+        return {prop: weight_dct.get(prop, default) if isinstance(weight_dct.get(prop), dict) else default
+                for prop in self.write_options}
 
-        for prop in self.write_options:
-            if prop in weight_dct:
-                if isinstance(weight_dct[prop], dict):
-                    dct[prop] = weight_dct[prop]
-                else:
-                    dct[prop] = default
-            else:
-                dct[prop] = default
-        return dct 
-    
-    def _default_labeling(self, path, label, num=3):
-        if num > 0:
-            directory_split = os.path.split(path)
-            new_directory = directory_split[0]
-            if label == '':
-                new_label = directory_split[1]
-            else:
-               new_label = directory_split[1] + '_' + label
-            return self._default_labeling(new_directory, new_label, num-1)
-        else:
+    def _default_labeling(self, path, label='', depth=3):
+        """Generates default labels by iterating up the directory hierarchy."""
+        if depth == 0:
             return label
+        new_label = os.path.basename(path) if not label else f"{os.path.basename(path)}_{label}"
+        return self._default_labeling(os.path.dirname(path), new_label, depth - 1)
 
     def _get_energy_paths(self):
+        """Extracts all energy-related paths from the input_paths dictionary."""
         relative_energy_paths = []
-        for path in self.input_paths:
-            if 'energy' in self.input_paths[path]:
-                if isinstance(self.input_paths[path]['energy'], dict):
-                    if self.input_paths[path]['energy'].get('add') is not None:
-                        relative_energy_paths += self.input_paths[path]['energy']['add']
-                    if self.input_paths[path]['energy'].get('subtract') is not None:
-                        relative_energy_paths += self.input_paths[path]['energy']['subtract']
+        for path_config in self.input_paths.values():
+            energy_config = path_config.get('energy', {})
+            if isinstance(energy_config, dict):
+                relative_energy_paths.extend(energy_config.get('add', []))
+                relative_energy_paths.extend(energy_config.get('subtract', []))
         return relative_energy_paths
 
     def _get_path_values(self, top_path, root_path):
-        # Based on the root path
+        """Extracts and processes path-related configuration settings."""
+        path_config = self.input_paths.get(top_path, {})
         path_dct = {}
-        supported_properties = ['label', 'structure'] + self.write_options 
+        supported_properties = ['label', 'structure'] + self.write_options
+
         for prop in supported_properties:
-            try:
-                value = self.input_paths[top_path].get(prop)
-            except KeyError: # Can arise for the energy_paths specified, or if value not specified
-                value = None
+            value = path_config.get(prop)
+
             if prop == 'label':
+                path_dct[prop] = value if value is not None else self._default_labeling(root_path)
+
+            elif prop == 'structure':
                 if value is None:
-                    value = self._default_labeling(root_path, '') # Default 
-            elif prop == 'structure': 
-                if value is None:
-                    value = {'pymatgen_structure': True} # Default
+                    path_dct[prop] = {'pymatgen_structure': True}
                 elif isinstance(value, dict):
-                    if value.get('pymatgen_structure') is None and value.get('ase_structure') is None:
-                        value['pymatgen_structure'] = True # Default
+                    if 'pymatgen_structure' not in value and 'ase_structure' not in value:
+                        value['pymatgen_structure'] = True
+                    path_dct[prop] = value
                 else:
-                    print(f'{value} not recognized for {prop} in .yml; defaulting to pymatgen_structure=True')
-                    value = {'pymatgen_structure': True}
-            elif prop == 'energy': 
+                    logging.warning(f"Invalid value {value} for {prop}; defaulting to pymatgen_structure=True")
+                    path_dct[prop] = {'pymatgen_structure': True}
+
+            elif prop == 'energy':
                 if value is None or value is True:
-                    value = {'weights': self.default_weights['energy']} # Default
-                elif isinstance(value, dict): # Dictionary passed
-                    if value.get('weights') is None: # No weights specified
-                        value['weights'] = self.default_weights['energy']
-                    elif isinstance(value.get('weights'), int):
-                        value['weights'] = float(value['weights']) # Set fixed energy weighting here
+                    path_dct[prop] = {'weights': self.default_weights['energy']}
+                elif isinstance(value, dict):
+                    value.setdefault('weights', self.default_weights['energy'])
+                    if isinstance(value['weights'], int):
+                        value['weights'] = float(value['weights'])
+                    path_dct[prop] = value
                 else:
-                    print(f'{value} not recognized for {prop} in .yml; defaulting to True')
-                    value = {'weights': self.default_weights['energy']} # Default
+                    logging.warning(f"Invalid value {value} for {prop}; defaulting to True")
+                    path_dct[prop] = {'weights': self.default_weights['energy']}
+
             else:
                 if value is None or value is False:
-                    pass
+                    path_dct[prop] = False
                 elif value is True:
-                    value = {'weights': self.default_weights[prop]}
+                    path_dct[prop] = {'weights': self.default_weights[prop]}
                 elif isinstance(value, dict):
-                     if value.get('weights') is None: # No weights specified
-                        value['weights'] = self.default_weights[prop]
-                     elif isinstance(value.get('weights'), list):
+                    value.setdefault('weights', self.default_weights[prop])
+                    if isinstance(value['weights'], list):
                         value['weights'] = [float(val) for val in value['weights']]
+                    path_dct[prop] = value
                 else:
-                    print(f'{value} not recognized for {prop} in .yml; defaulting to False')
-            path_dct[prop] = value
+                    logging.warning(f"Invalid value {value} for {prop}; defaulting to False")
+                    path_dct[prop] = False
         path_dct['top_path'] = top_path
         return path_dct
-
-    def _none_false(self, val):
-        if val is None or val is False:
-            return False
-        else:
-            return True
-
-    # Multiprocessing parsing
-    '''
+    
     def _dct_parser(self, path_dct, path):
-        # Simplified version of your existing _dct_parser function
-        try:
-            parsed_dct = ParserFactory.create_parser(path,
-                pymatgen_structure=self._none_false(path_dct['structure'].get('pymatgen_structure')),
-                ase_atoms=self._none_false(path_dct['structure'].get('ase_atoms')),
-                periodic_geometries=self._none_false(self.generation_parameters.get('periodic_geometries')), 
-                energy=self._none_false(path_dct.get('energy')),
-                charges=self._none_false(path_dct.get('charges')),
-                forces=self._none_false(path_dct.get('forces')),
-                distances=self._none_false(path_dct.get('distances')),
-                angles=self._none_false(path_dct.get('angles')),
-                dihedrals=self._none_false(path_dct.get('dihedrals')),
-                lattice_vectors=self._none_false(path_dct.get('lattice_vectors'))
-                ).parse_all()
-            reax_entry = ReaxEntry(label=path_dct['label'])
-            reax_entry.from_dict(parsed_dct)
-            #print(f'ReaxFF entry is: {reax_entry}')
-            path_dct['reax_entry'] = reax_entry
-            return path_dct
-        except AttributeError:
-            return None
+        
+        def true_if(val):
+            if val is None or val is False:
+                return False
+            else:
+                return True
 
+        kwargs_dct = {'pymatgen_structure': true_if(path_dct['structure'].get('pymatgen_structure')), 
+                      'ase_atoms': true_if(path_dct['structure'].get('ase_atoms')), 
+                      'periodic_geometries': true_if(self.generation_parameters.get('periodic_geometries')), 
+                      'energy': true_if(path_dct.get('energy')),
+                      'charges': true_if(path_dct.get('charges')),
+                      'forces': true_if(path_dct.get('forces')),
+                      'distances': true_if(path_dct.get('distances')),
+                      'angles': true_if(path_dct.get('angles')),
+                      'dihedrals': true_if(path_dct.get('dihedrals')),
+                      'lattice_vectors': true_if(path_dct.get('lattice_vectors'))
+                    }
+        parsed_dct = ParserFactory.create_parser(path, **kwargs_dct)
+        
+        if parsed_dct:
+            reax_entry = ReaxEntry(label=path_dct['label'])
+            reax_entry.from_dict(parsed_dct.parse_all())
+        else:
+            reax_entry = None
+        path_dct['reax_entry'] = reax_entry
+            
+        return path_dct
+        
     def _get_all_paths(self, paths, walk_roots):
         all_paths = [] # top path, root path or top path, top path
         for path in paths:
             if walk_roots:
                 for root, _, _ in os.walk(os.path.abspath(path), topdown=True):
-                    all_paths.append((path, root))
+                    if root not in [pair[1] for pair in all_paths]:
+                        all_paths.append((path, root))
             else:
-                all_paths.append((path, path))
-        #print(all_paths)
+                if path not in [pair[1] for pair in all_paths]:
+                    all_paths.append((path, path))
+        
         return all_paths
 
     def _worker_task(self, path):
-        try:
-            path_dct = self._get_path_values(top_path=path[0], root_path=path[1])  # Dictionary associated with each path
-            parsed_dct = self._dct_parser(path_dct, path[1])
-            return (path[1], parsed_dct) # Returns the parsed dictionary
-        except (ValueError, AttributeError):  # Handle errors
-            return None
+        path_dct = self._get_path_values(top_path=path[0], root_path=path[1])  # Dictionary associated with each path
+        reax_entry = self._dct_parser(path_dct, path[1])
+        
+        return (path[1], reax_entry) # Returns the parsed ReaxEntry or None
 
     def _build_objects_dct(self, objects_dct, paths, walk_roots=True):
         # Step 1: Gather all paths
         all_paths = self._get_all_paths(paths, walk_roots)
-
+        
         # Step 2: Parallelize parsing using multiprocessing
         with Pool() as pool:
             results = pool.map(self._worker_task, all_paths)
         
         # Step 3: Aggregate results
         for i, result in enumerate(results):
-            if result[1]:  # Ignore null values for object construction
+            if result[1]['reax_entry']:  # Ignore Nonetype Reax objects
                 if all_paths[i][1] not in list(objects_dct.keys()):
                     objects_dct[result[0]] = result[1]
 
         return objects_dct
-    '''
-    # Serialized parsing
-    #'''
-    def _dct_parser(self, objects_dct, path_dct, path):
-        parsed_dct = ParserFactory.create_parser(path,
-                pymatgen_structure=self._none_false(path_dct['structure'].get('pymatgen_structure')),
-                ase_atoms=self._none_false(path_dct['structure'].get('ase_atoms')),
-                periodic_geometries=self._none_false(self.generation_parameters.get('periodic_geometries')), 
-                energy=self._none_false(path_dct.get('energy')),
-                charges=self._none_false(path_dct.get('charges')),
-                forces=self._none_false(path_dct.get('forces')),
-                distances=self._none_false(path_dct.get('distances')),
-                angles=self._none_false(path_dct.get('angles')),
-                dihedrals=self._none_false(path_dct.get('dihedrals')),
-                lattice_vectors=self._none_false(path_dct.get('lattice_vectors'))
-                ).parse_all()
-        reax_entry = ReaxEntry(label=path_dct['label'])
-        reax_entry.from_dict(parsed_dct)
-        path_dct['reax_entry'] = reax_entry
-        objects_dct[path] = path_dct
-        return objects_dct
-
-    def _build_objects_dct(self, objects_dct, paths, walk_roots=True):
-        for path in paths:
-            if walk_roots == True:
-                for root, dirs, files in os.walk(os.path.abspath(path), topdown=True):
-                    if root not in list(objects_dct.keys()):
-                        path_dct = self._get_path_values(top_path=path, root_path=root) # Dictionary associated with each path
-                        try:
-                            objects_dct = self._dct_parser(objects_dct, path_dct, root)
-                        except (ValueError, AttributeError):
-                            continue
-            else:
-                if path not in list(objects_dct.keys()):
-                    path_dct = self._get_path_values(top_path=path, root_path=path) # Dictionary associated with each path
-                    try:
-                        objects_dct = self._dct_parser(objects_dct, path_dct, path)
-                    except (ValueError, AttributeError): # No DFT code in the root directory being searched
-                        continue
-        return objects_dct
-    #'''
 
     def _check_paths(self, paths_list):
         for path in paths_list:
@@ -271,66 +213,78 @@ class ReaxRW():
         return 
 
     def _construct_objects_dct(self):
-        sorted_input_paths = sorted(list(self.input_paths.keys()), key=len, reverse=True)
-        sorted_energy_paths = sorted(list(self._get_energy_paths()), key=len, reverse=True)
+        sorted_input_paths = sorted(list(set(self.input_paths.keys())), key=len, reverse=True)
+        sorted_energy_paths = sorted(list(set(self._get_energy_paths())), key=len, reverse=True)
+
         self._check_paths(sorted_input_paths)
         self._check_paths(sorted_energy_paths)
+        
         objects_dct = self._build_objects_dct({}, sorted_input_paths) # Construct top level paths first
-        objects_dct = self._build_objects_dct(objects_dct, sorted_energy_paths, walk_roots=False) # Then attempt to construct energy paths
+        all_sorted_input_paths = sorted(list(objects_dct.keys()))
+        
+        parse_sorted_energy_paths = [path for path in sorted_energy_paths if path not in all_sorted_input_paths]
+        objects_dct = self._build_objects_dct(objects_dct, parse_sorted_energy_paths, walk_roots=False) # Then attempt to construct energy paths
+         
         return objects_dct
 
-    def _get_relative_energies(self, objects_dictionary):
-        ''' Continue editing this ''' 
-        # Compute weights across all relative energies
-        energy_dct = {} # ReaxObj: {relative_energy: float, add: [], subtract: [], divisors: , weight, sig_figs}
-        for object_path in objects_dictionary:
-            reax_obj = objects_dictionary[object_path]['reax_entry']
-            add_reax_objs, subtract_reax_objs = [], []
-            if 'add' in objects_dictionary[object_path]['energy']:
-                for add_path in objects_dictionary[object_path]['energy']['add']:
-                    add_reax_objs.append(objects_dictionary[add_path]['reax_entry'])
-            if 'subtract' in objects_dictionary[object_path]['energy']:
-                for subtract_path in objects_dictionary[object_path]['energy']['subtract']:
-                    subtract_reax_objs.append(objects_dictionary[subtract_path]['reax_entry'])
-            
-            if add_reax_objs == [] and subtract_reax_objs == []:
-                pass
-            else:
-                energy_dct[object_path] = {}
-                if 'get_divisors' in objects_dictionary[object_path]['energy']:
-                    get_divisors = objects_dictionary[object_path]['energy']['get_divisors']
-                else:
-                    get_divisors = False # Default is to just use 1 for everything, default within the ReaxEntry
-                reax_objs, signs, divisors, relative_energy = reax_obj.get_relative_energy(add_reax_objs, 
-                                                                                               subtract_reax_objs, 
-                                                                                               get_divisors)
-                energy_dct[object_path] = {'reax_entry': reax_obj,
-                                           'relative_energy': relative_energy.value,
-                                           'add': add_reax_objs, 
-                                           'subtract': subtract_reax_objs, 
-                                           'get_divisors': get_divisors}
-        
-        ### Get the weights to use from the relative energy values
+    def _extract_relative_energy_components(self, obj_dict, obj_path):
+        """ Extracts add, subtract, and divisor entries for a given object. """
+        entry = obj_dict[obj_path]['reax_entry']
+        add_entries = [obj_dict[path]['reax_entry'] for path in obj_dict[obj_path]['energy'].get('add', [])]
+        subtract_entries = [obj_dict[path]['reax_entry'] for path in obj_dict[obj_path]['energy'].get('subtract', [])]
+        divisors = obj_dict[obj_path]['energy'].get('get_divisors', False)
+
+        return entry, add_entries, subtract_entries, divisors
+
+    def _compute_relative_energy(self, obj_dict):
+        """ Computes relative energies for each object and stores in a dictionary. """
+        energy_dict = {}
+
+        for obj_path in obj_dict:
+            entry, add_entries, subtract_entries, divisors = self._extract_relative_energy_components(obj_dict, obj_path)
+
+            if not add_entries and not subtract_entries:
+                continue  # No relative energy calculation needed
+
+            reax_objs, signs, divs, rel_energy = entry.get_relative_energy(add_entries, subtract_entries, divisors)
+
+            energy_dict[obj_path] = {
+                'reax_entry': entry,
+                'relative_energy': rel_energy.value,
+                'add': add_entries,
+                'subtract': subtract_entries,
+                'get_divisors': divisors
+            }
+
+        return energy_dict
+
+    def _assign_weights(self, energy_dict, obj_dict):
+        """ Assigns weights to relative energy values. """
         super_paths, super_values = [], []
-        for energy_path in list(energy_dct.keys()):
-            relative_energy = energy_dct[energy_path]['relative_energy']
-            weights = objects_dictionary[energy_path]['energy']['weights']
-            if weights == self.default_weights['energy']: # Top level relative energy weights
+
+        for energy_path, data in energy_dict.items():
+            rel_energy = data['relative_energy']
+            weights = obj_dict[energy_path]['energy']['weights']
+
+            if weights == self.default_weights['energy']:
                 super_paths.append(energy_path)
-                super_values.append(energy_dct[energy_path]['relative_energy'])
+                super_values.append(rel_energy)
             elif isinstance(weights, float):
-                energy_dct[energy_path]['weight'] = weights
-            elif isinstance(weights, dict): # Different dictionary
-                # WARNING: Doesn't work for magnitude weighting within the same path !!!
-                energy_dct[energy_path]['weight'] = WeightedSampler([relative_energy], weights).sample()[0]
-        
+                data['weight'] = weights
+            elif isinstance(weights, dict):
+                data['weight'] = WeightedSampler([rel_energy], weights).sample()[0]
+
         super_weights = WeightedSampler(super_values, self.default_weights['energy']).sample()
+
         for i, super_path in enumerate(super_paths):
-            if isinstance(super_weights, float): # Only float returned
-                energy_dct[super_path]['weight'] = super_weights
-            else:
-                energy_dct[super_path]['weight'] = super_weights[i]
-        return energy_dct
+            energy_dict[super_path]['weight'] = super_weights if isinstance(super_weights, float) else super_weights[i]
+
+        return energy_dict
+
+    def _get_relative_energies(self, objects_dictionary):
+        """ Wrapper function to compute relative energies and assign weights. """
+        energy_dict = self._compute_relative_energy(objects_dictionary)
+        return self._assign_weights(energy_dict, objects_dictionary)
     
     def get_geo_string(self, objects_dictionary):
         write_string = deepcopy(self.geo) # Copy the geo file string
@@ -342,114 +296,118 @@ class ReaxRW():
                 write_string += reax_obj_str
         return write_string
 
-    def _modify_string(self, main_string, check_string, substitute_string, insert_point_string=None, placeholder='weight', pattern=r"(\d+\.\d*)"):
-        ''' Check for regex pattern, and substitute string into existing string '''
-        escaped_check_string = re.escape(check_string).replace(placeholder, pattern)
-        escaped_pattern = re.compile(escaped_check_string)
-        match = escaped_pattern.search(main_string)
-        if match:
-            if 'fix_input_weights' in self.generation_parameters and self.generation_parameters['fix_input_weights'] is True:
-                #print(f'Input weights are fixed; no modifications to be made to {match.group()}')
-                return main_string # Keep everything fixed, do not change
-            else:
-                if match.group() != substitute_string: # If True, not a header or footer
-                    weight_match = escaped_pattern.search(substitute_string)
-                    weight = float(weight_match.group(1)) # Get the weight from the match
-                    if weight == 0: # Remove zero-valued weight strings from main_string
-                        return main_string.replace(match.group(), '')
-                    else:
-                        return main_string.replace(match.group(), substitute_string) # Replace old string with new string
-                else:
-                    return main_string # Same string is matched, so no changes necessary
-        else:
-            if check_string == substitute_string: # Catches headers, footers
-                return main_string + substitute_string # Add to end
-            else:
-                weight_match = escaped_pattern.search(substitute_string)
-                weight = float(weight_match.group(1)) # Get the weight from the match
-                if weight == 0: # Remove zero-valued weight strings from main_string
-                    return main_string
-                else:
-                    if insert_point_string: # Insert after the insert_point_string variable
-                        position = main_string.find(insert_point_string)
-                        if position != -1: # Finds insert_point_string
-                            insertion_point = position + len(insert_point_string)
-                            return main_string[:insertion_point] + substitute_string + main_string[insertion_point:]
-                        else:
-                            return main_string + substitute_string
-                    else: # No insert_point_string
-                        return main_string + substitute_string
+    def _modify_string(self, main_str, check_str, sub_str, insert_point_str=None, placeholder='weight', pattern=r"(\d+\.\d*)"):
+        """ Modifies a string by replacing or inserting values based on regex matching. """
 
-    def _split_lines_and_modify(self, main_string, regex_string, weights_string, insert_point_string=None, placeholder='weight', pattern=r"(\d+\.\d*)"):
-        split_regex_strings = re.split(r'(\n)', regex_string)
-        regex_list = [split_regex_strings[i] + split_regex_strings[i + 1] for i in range(0, len(split_regex_strings) - 1, 2)]
-        split_weights_strings = re.split(r'(\n)', weights_string)
-        weights_list = [split_weights_strings[i] + split_weights_strings[i + 1] for i in range(0, len(split_weights_strings) - 1, 2)]
-        #print(regex_list, weights_list)
-        for i, regex in enumerate(regex_list):
-            main_string = self._modify_string(main_string, regex, weights_list[i], insert_point_string, placeholder, pattern)
-        return main_string
+        # Escape special regex characters and replace placeholder
+        regex_pattern = re.escape(check_str).replace(placeholder, pattern)
+        compiled_pattern = re.compile(regex_pattern)
+
+        match = compiled_pattern.search(main_str)
+
+        if match:
+            if self.generation_parameters.get('fix_input_weights', True):
+                return main_str  # No modifications if weights are fixed
+
+            if match.group() != sub_str:  # If actual replacement is needed
+                weight_match = compiled_pattern.search(sub_str)
+                weight = float(weight_match.group(1)) if weight_match else None
+
+                if weight == 0:
+                    return main_str.replace(match.group(), '')  # Remove zero-weight entries
+                else:
+                    return main_str.replace(match.group(), sub_str)  # Replace with new string
+            return main_str  # No change needed
+        else:
+            # Handle case where check_str isn't found in main_str
+            weight_match = compiled_pattern.search(sub_str)
+            try:
+                weight = float(weight_match.group(1))
+            except (AttributeError, IndexError):
+                weight = None
+
+            if weight == 0:
+                return main_str  # Don't insert zero-weight strings
+
+            if insert_point_str:
+                pos = main_str.find(insert_point_str)
+                if pos != -1:
+                    return main_str[:pos + len(insert_point_str)] + sub_str + main_str[pos + len(insert_point_str):]
+            return main_str + sub_str  # Default append if no insert point
+
+    def _split_lines_and_modify(self, main_str, regex_str, weights_str, insert_point_str=None, placeholder='weight', pattern=r"(\d+\.\d*)"):
+        """ Splits strings line by line and modifies matching sections. """
+
+        regex_list = [r + n for r, n in zip(re.split(r'(\n)', regex_str)[::2], re.split(r'(\n)', regex_str)[1::2])]
+        weights_list = [w + n for w, n in zip(re.split(r'(\n)', weights_str)[::2], re.split(r'(\n)', weights_str)[1::2])]
+
+        for regex, weight in zip(regex_list, weights_list):
+            main_str = self._modify_string(main_str, regex, weight, insert_point_str, placeholder, pattern)
+
+        return main_str
 
     def get_trainsetin_string(self, objects_dictionary, self_energy=False):
         write_string = deepcopy(self.trainsetin)
-        ere = ReaxEntry(label='empty') # For writing headers and footers
-        
-        # Handling non-Geometry properties
-        for write_option in ['charges', 'forces', 'lattice_vectors']:
-            property_start = ere.trainsetin_section_header(write_option)
-            write_string = self._modify_string(write_string, property_start, property_start) # Add start if it doesn't exist
+        ere = ReaxEntry(label='empty')
 
-            for path_i, object_path in enumerate(list(objects_dictionary.keys())):
-                option_val = objects_dictionary[object_path][write_option]
+        def update_write_string(write_string, ere, section, obj_dict, header=True, footer=True):
+            start_marker = ere.trainsetin_section_header(section)
+            end_marker = ere.trainsetin_section_footer(section)
+
+            if header:
+                write_string = self._modify_string(write_string, start_marker, start_marker)
+
+            for object_path, obj_data in obj_dict.items():
+                option_val = obj_data.get(section)
                 if isinstance(option_val, dict):
                     weights = option_val['weights']
-                    reax_obj = objects_dictionary[object_path]['reax_entry']
-                    re_string = reax_obj.get_property_string(write_option, weights='weight',
-                                                                 default_weights=self.default_weights[write_option]) # For regex
-                    weight_string = reax_obj.get_property_string(write_option, weights=weights,
-                                                                 default_weights=self.default_weights[write_option])
-                    write_string = self._split_lines_and_modify(write_string, re_string, weight_string, property_start)
-            property_end = ere.trainsetin_section_footer(write_option)
-            write_string = self._modify_string(write_string, property_end, property_end) 
-        
-        # Handling Geometry Properties
-        geometry_start = ere.trainsetin_section_header('distances')
-        write_string = self._modify_string(write_string, geometry_start, geometry_start) # Add start if it doesn't exist
+                    reax_obj = obj_data['reax_entry']
 
-        for write_option in ['distances', 'angles', 'dihedrals']:
-            for path_i, object_path in enumerate(list(objects_dictionary.keys())):
-                option_val = objects_dictionary[object_path][write_option]
-                if isinstance(option_val, dict):
-                    weights = objects_dictionary[object_path][write_option]['weights']
-                    reax_obj = objects_dictionary[object_path]['reax_entry']
-                    re_string = reax_obj.get_property_string(write_option, weights='weight',
-                                                                 default_weights=self.default_weights[write_option]) # For regex
-                    weight_string = reax_obj.get_property_string(write_option, weights=weights,
-                                                                 default_weights=self.default_weights[write_option])
-                    write_string = self._split_lines_and_modify(write_string, re_string, weight_string, geometry_start)
-        geometry_end = ere.trainsetin_section_footer('distances')
+                    re_string = reax_obj.get_property_string(section, weights='weight',
+                                                         default_weights=self.default_weights[section])
+                    weight_string = reax_obj.get_property_string(section, weights=weights,
+                                                             default_weights=self.default_weights[section])
+                    write_string = self._split_lines_and_modify(write_string, re_string, weight_string, start_marker)
+
+            if footer:
+                write_string = self._modify_string(write_string, end_marker, end_marker)
+            return write_string
+
+        # Process non-Geometry properties
+        for prop in ['charges', 'forces', 'lattice_vectors']:
+            write_string = update_write_string(write_string, ere, prop, objects_dictionary, header=True, footer=True)
+
+        # Process Geometry properties
+        geometry_start, geometry_end = ere.trainsetin_section_header('distances'), ere.trainsetin_section_footer('distances')
+        write_string = self._modify_string(write_string, geometry_start, geometry_start)
+        geometry_properties = ['distances', 'angles', 'dihedrals']
+        for prop in geometry_properties:
+            write_string = update_write_string(write_string, ere, prop, objects_dictionary, header=False, footer=False)
         write_string = self._modify_string(write_string, geometry_end, geometry_end)
 
-        # Handling energy
+        # Process Energy
         re_dictionary = self._get_relative_energies(objects_dictionary)
         energy_start = ere.trainsetin_section_header('energy')
-        write_string = self._modify_string(write_string, energy_start, energy_start) # Add start if it doesn't exist
+        write_string = self._modify_string(write_string, energy_start, energy_start)
 
-        for path_j, object_path in enumerate(list(re_dictionary.keys())):
-            reax_obj = re_dictionary[object_path]['reax_entry']
-            weight = re_dictionary[object_path]['weight']
-            add = re_dictionary[object_path]['add']
-            subtract = re_dictionary[object_path]['subtract']
-            if self_energy == False and (reax_obj in add or reax_obj in subtract):
-                continue # Don't write self energy
-            else:
-                re_string = reax_obj.relative_energy_to_string(weight='weight', add=add, subtract=subtract,
-                                                               get_divisors=re_dictionary[object_path]['get_divisors'])
-                weight_string = reax_obj.relative_energy_to_string(weight=weight, add=add, subtract=subtract,
-                                                               get_divisors=re_dictionary[object_path]['get_divisors'])
-                write_string = self._modify_string(write_string, re_string, weight_string, energy_start)
+        for object_path, energy_data in re_dictionary.items():
+            reax_obj = energy_data['reax_entry']
+            weight = energy_data['weight']
+            add = energy_data['add']
+            subtract = energy_data['subtract']
+
+            if not self_energy and (reax_obj in add or reax_obj in subtract):
+                continue  # Skip self-energy entries
+
+            re_string = reax_obj.relative_energy_to_string(weight='weight', add=add, subtract=subtract,
+                                                        get_divisors=energy_data['get_divisors'])
+            weight_string = reax_obj.relative_energy_to_string(weight=weight, add=add, subtract=subtract,
+                                                            get_divisors=energy_data['get_divisors'])
+            write_string = self._modify_string(write_string, re_string, weight_string, energy_start)
+
         energy_end = ere.trainsetin_section_footer('energy')
         write_string = self._modify_string(write_string, energy_end, energy_end)
+
         return write_string
 
     def file_to_string(self, filepath):
@@ -461,34 +419,39 @@ class ReaxRW():
         with open(filepath, "w") as text_file:
             text_file.write(write_string)
         return 
-
+    
     def write_trainsetins(self, attempt_multiplier=5, self_energy=False):
         print('Constructing ReaxFF objects dictionary...')
         objects_dictionary = self._construct_objects_dct()
-        #print(objects_dictionary)
         geo_string = self.get_geo_string(objects_dictionary)
 
         runs_to_generate = self.generation_parameters['runs_to_generate']
         output_directory = self.generation_parameters['output_directory']
 
-        trainsetin_strings = []
-        unique = 0
+        unique_trainset_strings = set()  # Use a set instead of a list for fast lookups
         attempts = 0
-        
+        max_attempts = attempt_multiplier * runs_to_generate
+
         print('Writing unique trainset.in files...')
-        while unique < runs_to_generate: # Get unique trainset.in files
-            if attempts > attempt_multiplier * runs_to_generate:
-                print(f'Number of unique trainset.in file generation attempts exceeds {attempt_multiplier * runs_to_generate}; breaking loop...')
+
+        while len(unique_trainset_strings) < runs_to_generate:
+            if attempts > max_attempts:
+                print(f'Number of unique trainset.in file generation attempts exceeds {max_attempts}; breaking loop...')
                 break
+
             trainsetin_string = self.get_trainsetin_string(objects_dictionary, self_energy)
-            if trainsetin_string not in trainsetin_strings:
-                subdirectory = self.config_dct.get('output_format') + '_run_' + str(unique)
+
+            if trainsetin_string not in unique_trainset_strings:
+                unique_trainset_strings.add(trainsetin_string)  # Add to the set
+
+                unique_index = len(unique_trainset_strings) - 1
+                subdirectory = f"{self.config_dct.get('output_format')}_run_{unique_index}"
                 write_path = os.path.join(output_directory, subdirectory)
                 os.makedirs(write_path, exist_ok=True)
+
                 self.string_to_file(os.path.join(write_path, 'geo'), geo_string)
                 self.string_to_file(os.path.join(write_path, 'trainset.in'), trainsetin_string)
-                trainsetin_strings.append(trainsetin_string)
-                unique += 1
+
             attempts += 1
-        print(f'Finished successfully, {unique} unique trainset.in files written to {output_directory}.')
-        return
+
+        print(f'Finished successfully, {len(unique_trainset_strings)} unique trainset.in files written to {output_directory}.')

@@ -84,21 +84,21 @@ Energy references: Specify reference states for subtracting energies (e.g., for 
 Example entry:
 
     /path/to/directory_tree_of_DFT_runs:
-        `structure`:
-            `rutype`: 'NORMAL RUN'
-        `energy`:
-            `subtract`:
+        structure:
+            rutype: 'NORMAL RUN'
+        energy:
+            subtract:
                 - /path/to/reference1_directory
                 - /path/to/reference2_directory
-            `get_divisors`: True 
-        `forces`: True
-        `charges`:
-            `weights`:
-                `type`: 'binary'
-                `min`: 0
-                `max`: 1
-                `split`: 0.85
-        `angles`: False
+            get_divisors: True 
+        forces: True
+        charges:
+            weights:
+                type: 'binary'
+                min: 0
+                max: 1
+                split: 0.85
+        angles: False
 
 Energies are written to `trainset.in` without duplicates, prioritizing shorter or named directory paths.
 
