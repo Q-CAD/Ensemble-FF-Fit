@@ -12,16 +12,11 @@ authors = [
     { name = "Ryan Morelock", email = "rym@ornl.gov" }
 ]
 dependencies = [
-    "numpy",  # Add your dependencies here
-    "ase",
-    "torch-sim-atomistic",
-    "pymatgen",
+    "pymatgen", 
     "pymatgen-analysis-defects",
-    "PyYAML",
-    "frozendict",
-    "mp-api",
-    "matminer",
-    "pyscal3"
+    "mp-api", 
+    "ase", 
+    "frozendict"
 ]
 
 [project.scripts]
