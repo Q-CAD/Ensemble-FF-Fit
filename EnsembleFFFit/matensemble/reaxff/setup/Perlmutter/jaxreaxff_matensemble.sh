@@ -1,0 +1,58 @@
+#!/bin/bash
+
+# Number of perlmutter nodes for job runs + 1 node for management.
+#SBATCH -N 3
+#
+# Change to your account
+# Also change in the srun command below
+#SBATCH -A m526_g
+#
+# Job naming stuff
+#SBATCH -J jaxreaxff-matensemble
+#SBATCH -o %x-%j.out
+#SBATCH -e %x-%j.err
+#
+# Requested time
+#SBATCH -t 00:30:00
+#
+# Requested queue
+#SBATCH -C gpu
+#SBATCH -q debug
+#
+# GPU stuff
+#SBATCH --ntasks-per-node=4
+#SBATCH --gpus-per-task=1
+
+# Load cudatoolkit
+module load PrgEnv-gnu/8.5.0
+module load cudatoolkit/12.4
+module load craype-accel-nvidia80
+
+# Activate the spack
+source /global/cfs/cdirs/m526/sbagchi/spack/share/spack/setup-env.sh
+spack env activate -p spack_matensemble_env
+unset LUA_PATH LUA_CPATH
+
+CONDA_ENV="/global/homes/r/rym/.conda/envs/jaxreaxff"
+CONDA_SITE="$CONDA_ENV/lib/python3.13/site-packages"
+SPACK_ENV="/global/cfs/cdirs/m526/sbagchi/spack/var/spack/environments/spack_matensemble_env/.spack-env/view"
+SPACK_SITE="$SPACK_ENV/lib/python3.13/site-packages"
+
+# Add conda environment with Jax-ReaxFF and Ensemble-FF-Fit to PYTHONPATH before the Spack path 
+export PYTHONPATH="${CONDA_SITE}:${FLUX_SITE}:${PYTHONPATH}"
+
+eval "$(command conda 'shell.bash' 'hook' 2> /dev/null)"
+conda deactivate
+conda activate "$CONDA_ENV"
+
+srun flux start python jaxreaxff_matensemble.py \
+	                   --run_directory JaxReaxFF_test/run_directory \
+			   --inputs_directory JaxReaxFF_test/inputs_directory \
+			   --check_file ffield \
+			   --num_e_minim_steps 200                          \
+                           --e_minim_LR 1e-4                               \
+                           --out_folder outputs                             \
+                           --save_opt all                                   \
+                           --num_trials 1                                  \
+                           --num_steps 5                                  \
+                           --init_FF_type fixed
