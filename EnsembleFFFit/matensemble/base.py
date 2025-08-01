@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
 from pymatgen.io.lammps.data import LammpsData
 import numpy as np
+from itertools import product
+from copy import deepcopy
+from pathlib import Path
 import os
 import warnings
 import sys
@@ -17,40 +20,106 @@ class MatEnsembleJob(ABC):
     @abstractmethod
     def get_tasks(self, paths): pass
 
-    def get_run_paths(self, check_file, append_check_file=True):
-        '''Check for check_file in roots of self.run_directory; if so, append path'''
-        run_paths = []
-        for root, _, _ in os.walk(self.run_directory):
-            check_file_path = os.path.join(root, check_file)
-            if os.path.exists(check_file_path):
-                if append_check_file == True:
-                    run_paths.append(os.path.abspath(check_file_path))
-                else:
-                    run_paths.append(os.path.abspath(root))
-        return run_paths
+    def _collect_paths(self, root: str, names: list[str]) -> dict[str, list[str]]:
+        d = {n: [] for n in names}
+        for dp, _, files in os.walk(root):
+            for f in files:
+                if f in d:
+                    d[f].append(os.path.abspath(os.path.join(dp, f)))
+        return d
 
-    def get_task_args_list(self, run_path_roots, check_file, options_keys, include_root=True, abs_path=True):
-        ''' Determines a task arg list based on passed options keys and run directories'''
-        task_arg_list = [[] for i in range(len(run_path_roots))]
-        
-        for i, root in enumerate(run_path_roots):
-            for option_key in options_keys:
-                root_path = os.path.join(root, self.options[option_key])
-                input_path = os.path.join(self.inputs_directory, self.options[option_key])
-                if os.path.exists(root_path):
-                    if include_root:
-                        task_arg_list[i].append(root_path)
-                    else:
-                        task_arg_list[i].append(self.options[option_key])
-                elif os.path.exists(input_path):
-                    if abs_path:
-                        task_arg_list[i].append(os.path.abspath(input_path))
-                    else:
-                        task_arg_list[i].append(input_path)
+    def _common_prefix(self, parts1: list[str], parts2: list[str]) -> int:
+        """How many leading path‐components do two split paths share?"""
+        i = 0
+        for a, b in zip(parts1, parts2):
+            if a == b:
+                i += 1
+            else:
+                break
+        return i
+
+    def _make_proximity_combinations(self, root: str, names: list[str]) -> list[list[str]]:
+        """
+        Like before: pick the name with the most hits as “anchor”,
+        then for each anchor-path choose nearest matches for the others.
+        """
+        paths = self._collect_paths(root, names)
+        # sanity
+        for n in names:
+            if not paths[n]:
+                raise FileNotFoundError(f"{n!r} not found under {root!r}")
+
+        # choose anchor = the key with max occurrences
+        anchor = max(names, key=lambda n: len(paths[n]))
+        combos = []
+        # pre-split into parts
+        split = {n: [p.split(os.sep) for p in paths[n]] for n in names}
+
+        for a_path, a_parts in zip(paths[anchor], split[anchor]):
+            row = []
+            for n in names:
+                if n == anchor:
+                    row.append(a_path)
                 else:
-                    print(f'Required {option_key} file {self.options[option_key]} does not exist in {self.run_directory} or {self.input_directory}; exiting')
-                    sys.exit(1)
-        return task_arg_list 
+                    # pick the occurrence of n with largest common-prefix with this anchor
+                    candidates = zip(paths[n], split[n])
+                    best = max(candidates, key=lambda tup: self._common_prefix(a_parts, tup[1]))[0]
+                    row.append(best)
+            combos.append(row)
+        return combos
+
+    def _reorder_combos(self, combos: list[list[str]],
+                   labels: list[str],
+                   ordered_labels: list[str]
+                  ) -> list[list[str]]:
+        """
+        Given:
+          - combos:        e.g. [['p1','p2','p3'], ['q1','q2','q3'], …]
+          - labels:        e.g. ['b','c','a']  # the meaning of each position
+          - ordered_labels: e.g. ['a','b','c']
+        Returns:
+          - reordered:    e.g. [['p3','p1','p2'], …]
+        """
+        reordered = []
+        for combo in combos:
+            # build a mapping from the old labels to the corresponding paths
+            m = dict(zip(labels, combo))
+            # then reassemble in the desired order
+            new_combo = [m[label] for label in ordered_labels]
+            reordered.append(new_combo)
+        return reordered
+
+    def build_full_runs(self, root0: str, files0: list[str], 
+                        root1: str, files1: list[str], 
+                        labels: list[str], ordered_labels: list[str]):
+        """
+        Returns a list of dicts, each with keys
+          'file0','file1','file2','file3','run_dir'
+        one entry per each file0 occurrence.
+        """
+        combos0 = self._make_proximity_combinations(root0, files0)
+        combos1 = self._make_proximity_combinations(root1, files1)
+
+        combos_both, task_dirs = [], []
+        for combo0 in combos0:
+            for combo1 in combos1:
+                combo_both = combo0 + combo1
+                combos_both.append(combo_both)
+
+                # Now solve for the run directory
+                sec_parts = {f: f.split(os.sep) for f in combo1}
+                longest_file = max(sec_parts, key=lambda f: len(sec_parts[f]))
+                lp = sec_parts[longest_file]
+                p0 = combo0[0].split(os.sep)
+                c = self._common_prefix(p0, lp)
+                # divergent tail from the long path
+                tail = lp[c+1:-1] # ignore root1 and base filename
+                parent0 = os.path.dirname(combo0[0])
+                task_dirs.append(os.path.join(parent0, *tail))
+
+        reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
+
+        return reordered_combos_both, task_dirs 
 
     def get_python(self):
         try:
@@ -64,20 +133,32 @@ class MatEnsembleJob(ABC):
             print(f'path: {paths[i]}, tasks: {tasks[i]}\n')
         print(f'Total tasks = {np.sum(tasks)}; cpus_per_task={cpus_per_task}; gpus_per_task={gpus_per_task}')
 
-    def run(self, task_list, task_command, run_tasks, 
+    def run(self, dry_run, task_command, run_tasks, 
                   cpus_per_task, gpus_per_task, 
                   task_arg_list, task_dir_list, 
                   write_restart_freq=1000000, buffer_time=1):
-        
-        from matensemble.matfluxGen import SuperFluxManager
-        master = SuperFluxManager(gen_task_list=task_list,
+
+        if dry_run:
+            self.dry_run(task_dir_list, run_tasks, cpus_per_task, gpus_per_task)
+        else:
+            from matensemble.matfluxGen import SuperFluxManager
+            
+            # Make a task list
+            task_list=[i for i in range(len(run_tasks))]
+
+            master = SuperFluxManager(gen_task_list=task_list,
                                   gen_task_cmd=task_command,
                                   ml_task_cmd=None,
                                   tasks_per_job=run_tasks,
                                   cores_per_task=cpus_per_task,
                                   gpus_per_task=gpus_per_task,
                                   write_restart_freq=1000000)
-        master.poolexecutor(task_arg_list=task_arg_list,
+            
+            # Make the task directories if they do not exist
+            for task_dir in task_dir_list:
+                os.makedirs(task_dir, exist_ok=True)
+
+            master.poolexecutor(task_arg_list=task_arg_list,
                             buffer_time=1,
                             task_dir_list=task_dir_list)
         return 
@@ -127,14 +208,26 @@ class JaxReaxFFMatEnsemble(MatEnsembleJob):
         """
         argv = []
         for k, v in d.items():
-            flag = f" --{k}"
+            flag = f"--{k}"
             if isinstance(v, bool):
                 if v:
                     argv.append(flag)
             else:
-                argv.extend([flag + ' ', str(v)])
+                argv.extend([flag, str(v)])
         return argv
 
-    def generic_task_command(self, args_dct):
-        jaxreaxff_exe = os.path.join(os.environ['CONDA_PREFIX'], 'bin', 'jaxreaxff')
-        return ''.join([jaxreaxff_exe] + self.dict_to_argv(args_dct))
+    def dict_to_str_list(self, d, labels, task_arg_list, ignore_list):
+        task_arg_strs = []
+        args_dct = {k: v for k, v in vars(d).items() if k not in ignore_list}
+        for i, task_arg in enumerate(task_arg_list):
+            task_arg_dct = deepcopy(args_dct)
+            for j, arg in enumerate(task_arg):
+                task_arg_dct[labels[j]] = arg
+            task_arg_str = self.dict_to_argv(task_arg_dct)
+            task_arg_strs.append(task_arg_str)
+        
+        return task_arg_strs
+
+    def generic_task_command(self, python_file):
+        python_exe = self.get_python()
+        return ''.join([python_exe] + [' '] + [python_file])

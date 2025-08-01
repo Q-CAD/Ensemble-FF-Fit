@@ -1,0 +1,94 @@
+# VARIABLES
+variable        T_melt          	equal 4500
+variable        T_anneal                equal 1800
+variable        T_room          	equal 300
+variable        INTERFACE_HEIGHT	equal 20 # For new starting structure
+
+# run lengths
+variable melt_steps	equal 300000
+variable room_steps	equal 10000 #50000
+variable anneal_steps	equal 1600000
+variable quench_steps	equal 7000000 #10000000
+
+units real
+dimension 3
+boundary p p p
+atom_style charge
+box tilt large
+processors * * *
+newton on
+neighbor 3.0 bin
+neigh_modify every 1 delay 0 check yes
+
+read_data ${structure}
+
+pair_style reaxff ${control_filename} safezone 3.0 mincap 500
+#pair_style reaxff NULL safezone 16 mincap 2400
+pair_coeff * * ${ff_filename} Bi Se
+
+fix 1 all qeq/reax 1 0.0 10.0 1.0e-6 reaxff
+
+thermo 		1000
+thermo_style 	custom step temp pe epair etotal press pxx pyy pzz lx ly lz vol density
+
+dump            positions all atom 200 filename.lammpstrj
+dump            d1 all custom 1000 dump_*.dump id type q x y z
+dump_modify     d1 element Bi Se
+
+timestep        0.5
+#restart         100000 restart.*
+
+#--------------- ENERGY_MINIMIZATION ---------------
+min_style 	fire
+minimize 	1e-6 1e-6 1000000 1000000
+write_data      Min.data
+
+#------------ FIX UPPER LAYER ------------
+#region 		upperlayer_reg block EDGE EDGE EDGE EDGE ${INTERFACE_HEIGHT} EDGE units box
+#group  		upperlayer region upperlayer_reg
+#group 		frozen subtract all upperlayer
+
+#------------------- BOUNDARY CONDITIONS -------------------
+#fix 		wallhi all wall/lj93 zhi EDGE 1.0 1.0 2.5 units box
+#fix 		walllo all wall/lj93 zlo EDGE 1.0 1.0 2.5 units box
+
+#-------------NPT AT ${T_room} -------------------------#
+fix             relax all npt temp ${T_room} ${T_room} 100 x 0 0 100 y 0 0 100
+run             ${room_steps}
+unfix           relax
+write_restart   npt_relax.res
+write_data      data.npt_relax
+write_data      npt_relax.lmp
+
+#------------------- NVT MELT AT ${T_melt} -------------------
+##fix 		melt all langevin ${T_melt} ${T_melt} 50 12345
+##fix 		ensemble all nve
+##run 		${melt_steps}
+##unfix 		melt
+##unfix 		ensemble
+##write_restart   partial_melt.res
+##write_data      data.partial_melt
+
+#-------------NPT AT ${T_room} -------------------------#
+#fix             relax all npt temp ${T_room} ${T_room} 100 x 0 0 100 y 0 0 100
+#run             ${room_steps}
+#unfix           relax
+#write_restart   npt_amorph_relax.res
+#write_data      data.npt_amorph_relax
+#write_data      npt_amorph_relax.lmp
+
+#----------- NVT AT ${T_anneal}  --------------------
+#fix 		heat all langevin ${T_anneal} ${T_anneal} 50 12345
+#fix 		ensemble all nve
+#run  		${anneal_steps}
+#unfix 		heat
+#unfix 		ensemble
+#write_restart   full_anneal.res
+#write_data      data.full_anneal
+
+#----------- NVT FROM ${T_anneal} to ${T_room} --------------------
+#fix 		quench all langevin ${T_anneal} ${T_room} 50 12345
+#fix 		ensemble all nve
+#run 		${quench_steps}
+#write_restart   full_quench.res
+#write_data      data.full_quench

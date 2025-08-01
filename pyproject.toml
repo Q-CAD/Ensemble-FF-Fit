@@ -15,20 +15,19 @@ dependencies = [
     "pymatgen", 
     "pymatgen-analysis-defects",
     "mp-api", 
-    "ase", 
     "frozendict"
 ]
 
 [project.scripts]
 mp_query = "EnsembleFFFit.generation.materials_project.mp_query_cli:main"
 generate_EoS = "EnsembleFFFit.generation.equation_of_state.generate_EoS_cli:main"
-generate_defects = "EnsembleFFFit/generation/defects/generate_defects_cli.py:main"
-generate_substitutions = "EnsembleFFFit/generation/substitutions/generate_substitutions_cli.py:main"
+generate_defects = "EnsembleFFFit.generation.defects.generate_defects_cli:main"
+generate_substitutions = "EnsembleFFFit.generation.substitutions.generate_substitutions_cli:main"
 
-jaxreaxff_matensemble = "EnsembleFFFit/matensemble/reaxff/jaxreaxff_matensemble_cli.py:main"
-lammps_matensemble = "EnsembleFFFit/matensemble/lammps/lammps_matensemble_cli.py:main"
+jaxreaxff_matensemble = "EnsembleFFFit.matensemble.reaxff.jaxreaxff_matensemble_cli:main"
+lammps_matensemble = "EnsembleFFFit.matensemble.lammps.lammps_matensemble_cli:main"
 
-copy_by_pattern = "EnsembleFFFit/utils/copy_by_pattern_cli.py:main"
+copy_by_pattern = "EnsembleFFFit.utils.copy_by_pattern_cli:main"
 
 [tool.setuptools]
 packages = ["EnsembleFFFit"]  # Ensure this matches your package directory name

@@ -1,4 +1,6 @@
 import argparse
+from copy import deepcopy
+import os
 from frozendict import frozendict
 from EnsembleFFFit.matensemble.base import JaxReaxFFMatEnsemble
 
@@ -31,11 +33,16 @@ def main():
   # MatEnsemble arguments
   parser.add_argument("--run_directory", "-rd", help="Path to the run directory tree", default='run_directory')
   parser.add_argument("--inputs_directory", "-id", help="Path to input file directory", default='inputs_directory')
-  parser.add_argument("--check_file", "-cf", help="Name of options key to check for in --run_directory", default='ffield')
+
+  parser.add_argument("--check_files", "-cfs", nargs='+',
+                        help="Names of argparse keys ['init_FF', 'params', 'geo', 'train_file', 'valid_file', 'valid_geo_file'] to check for in the --run_directory",
+                        default=['init_FF'])
+  parser.add_argument("--jaxreaxff_task", "-jt", help="Name of the python script used to interface with LAMMPs", default='jaxreaxff_task.py')
+
   parser.add_argument("--cpus_per_task", "-cpt", help="CPUs per task", type=int, default=16)
   parser.add_argument("--gpus_per_task", "-gpt", help="GPUs per task", type=int, default=1)
+  parser.add_argument("--fits_per_runpath", "-fpr", help="Number of JaxReaxFF fits for each runpath", type=int, default=4)
   parser.add_argument("--dry_run", "-dry", help="Only print the structures to be run", action='store_true') 
-  parser.add_argument("--tasks_per_directory", "-tpd", help="Number of JaxReaxFF fits for each directory", type=int, default=4)
 
   # From the Jax-ReaxFF package jaxreaxff executable. Default inputs: inital force field, parameters, geo and trainset files
   parser.add_argument('--init_FF', metavar='filename',
@@ -145,50 +152,55 @@ def main():
   run_reaxff(args)
 
 def run_reaxff(args):
+  # Generate the options dictionary for MatEnsembleJob object initilization
+  matensemble_arguments = ['run_directory', 'inputs_directory', 'check_files', 'jaxreaxff_task', 
+                           'cpus_per_task', 'gpus_per_task', 'fits_per_runpath', 'dry_run']
+
   options = {'init_FF': args.init_FF,
              'params': args.params,
              'geo': args.geo,
-             'train_file': args.train_file, 
-             'valid_file': args.valid_file, 
-             'valid_geo_file': args.valid_geo_file}
+             'train_file': args.train_file}
 
-  dont_include = ['run_directory', 'inputs_directory', 'check_file', 
-                  'cpus_per_task', 'gpus_per_task', 'dry_run', 'tasks_per_directory']
-  args_dct = {k: v for k, v in vars(args).items() if k not in dont_include}
+  if args.use_valid:
+    options['valid_file'] = args.valid_file 
+    options['valid_geo_file'] = args.valid_geo_file
 
+  # Initialize the JaxReaxFF object
   jaxreaxff_matensemble = JaxReaxFFMatEnsemble(args.run_directory, args.inputs_directory, **options)
-  run_paths = jaxreaxff_matensemble.get_run_paths(args.check_file, append_check_file=False)
-  task_list = [i for i in range(len(run_paths))]
-  
-  default_options = ["init_FF", "params", "geo", "train_file"]
-  options_order = default_options if not args.use_valid else default_options + ["valid_file", "valid_geo_file"] 
-  if not args.use_valid: # Don't use validation files
-      args_dct.pop('valid_file', 0)
-      args_dct.pop('valid_geo_file', 0)
 
-  tasks = jaxreaxff_matensemble.get_tasks(run_paths, args.tasks_per_directory)
-  task_arg_list = jaxreaxff_matensemble.get_task_args_list(run_paths, args.check_file, options_order, include_root=False)
+  # Generate the task command path command by checking the inputs directory
+  jaxreaxff_task_command = os.path.abspath(os.path.join(args.inputs_directory, args.jaxreaxff_task))
+  if not os.path.isfile(jaxreaxff_task_command):
+    raise ValueError(f'Invalid task command {jaxreaxff_task_command}; file does not exist!')
+  task_command = jaxreaxff_matensemble.generic_task_command(jaxreaxff_task_command)
 
-  if all(task == task_arg_list[0] for task in task_arg_list):
-      updated_args_dct = {default_options[i]: task_arg_list[0][i] for i in range(len(default_options))}
-      args_dct.update(updated_args_dct)
-  else:
-    print('Not all tasks are the same; exiting')
-    sys.exit(1)
+  # Split the files to be checked in --run_directory vs --input_directory
+  inputs_directory_keys = [key for key in options.keys() if key not in args.check_files]
 
-  task_command = jaxreaxff_matensemble.generic_task_command(args_dct)
-  task_arg_list = [[] for i in range(len(run_paths))]
+  # Generate the run paths and task arguments
+  labels = args.check_files + inputs_directory_keys
+  task_arg_list, run_paths = jaxreaxff_matensemble.build_full_runs(root0=args.run_directory, files0=[options[c] for c in args.check_files],
+                                                                  root1=args.inputs_directory, files1=[options[k] for k in inputs_directory_keys],
+                                                                  labels=labels, ordered_labels=labels) # No ordering needed
 
-  if args.dry_run:
-    jaxreaxff_matensemble.dry_run(run_paths, tasks, args.cpus_per_task, args.gpus_per_task)
-    #print(f'Task command: {task_command}')
-  else:
-    jaxreaxff_matensemble.run(task_list=task_list,
-                               task_command=task_command,
-                               run_tasks=tasks,
-                               cpus_per_task=args.cpus_per_task,
-                               gpus_per_task=args.gpus_per_task,
-                               task_arg_list=task_arg_list,
-                               task_dir_list=run_paths)
+  # Create the arguments dictionary and yield the list of list of argparse argument strings
+  task_arg_strs = jaxreaxff_matensemble.dict_to_str_list(d=args, labels=labels, 
+                                                         task_arg_list=task_arg_list, 
+                                                         ignore_list=matensemble_arguments)
+
+  # Generate tasks per run based on user arguments
+  tasks = jaxreaxff_matensemble.get_tasks(run_paths, args.fits_per_runpath)
+
+  # Execute the MatEnsemble call
+  dry_run = True if args.dry_run else False
+  jaxreaxff_matensemble.run(dry_run=dry_run,
+                           task_command=task_command,
+                           run_tasks=tasks,
+                           cpus_per_task=args.cpus_per_task,
+                           gpus_per_task=args.gpus_per_task,
+                           task_arg_list=task_arg_strs,
+                           task_dir_list=run_paths)
+
+
 if __name__ == '__main__':
   main()
