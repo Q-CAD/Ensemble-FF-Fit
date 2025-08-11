@@ -1,6 +1,7 @@
 import argparse
 import sys
 import os
+from pathlib import Path
 from EnsembleFFFit.matensemble.base import LammpsMatEnsemble
 
 def main():
@@ -25,6 +26,7 @@ def main():
     parser.add_argument("--lammps_task_order", "-lto", nargs='+', 
                         help="Order of system arguments to pass to --lammps_task, i.e., sys.argv[1] is 'ffield'", 
                         default=['ffield', 'in_lammps', 'control', 'structure'])
+    parser.add_argument("--batch", "-b", help="Flag to batch the runs based on parent directory; useful for single points", action='store_true')
 
     # Execution options
     parser.add_argument("--atom_style", "-as", help="LAMMPs structure file atom style", type=str, default='charge')
@@ -35,7 +37,7 @@ def main():
 
     args = parser.parse_args()
     run_lammps(args)
-
+    
 def run_lammps(args):
     options = {'ffield': args.ffield, 
                'in_lammps': args.in_lammps,
@@ -64,7 +66,13 @@ def run_lammps(args):
     # Generate the tasks per run path based on the number of atoms in each structure
     structure_paths = [task_arg_list[i][args.lammps_task_order.index('structure')] for i in range(len(task_arg_list))]
     tasks = lammps_matensemble.get_tasks(structure_paths, atoms_per_task=args.atoms_per_task) 
-
+  
+    # If batching is True (for many short runs, e.g., single-points or energy minimizations), batch the arguments
+    if args.batch:
+        task_arg_list, run_paths = lammps_matensemble.batch_by_parent(task_arg_list, run_paths, args.check_files + inputs_directory_keys , 'structure')
+        structure_paths = [task_arg_list[i][args.lammps_task_order.index('structure')][0] for i in range(len(task_arg_list))]
+        tasks = lammps_matensemble.get_tasks(structure_paths, atoms_per_task=args.atoms_per_task)
+    
     # Execute the MatEnsemble call
     dry_run = True if args.dry_run else False
     lammps_matensemble.run(dry_run=dry_run,

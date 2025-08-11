@@ -1,9 +1,13 @@
 from abc import ABC, abstractmethod
 from pymatgen.io.lammps.data import LammpsData
+from pymatgen.io.ase import AseAtomsAdaptor
+from ase.io import read
 import numpy as np
 from itertools import product
 from copy import deepcopy
 from pathlib import Path
+from collections import defaultdict
+from typing import List, Tuple
 import os
 import warnings
 import sys
@@ -43,6 +47,9 @@ class MatEnsembleJob(ABC):
         Like before: pick the name with the most hits as “anchor”,
         then for each anchor-path choose nearest matches for the others.
         """
+        if not os.path.isdir(root):
+            raise FileNotFoundError(f"{root} is not a valid directory!")
+
         paths = self._collect_paths(root, names)
         # sanity
         for n in names:
@@ -121,6 +128,44 @@ class MatEnsembleJob(ABC):
 
         return reordered_combos_both, task_dirs 
 
+    def batch_by_parent(self, tasks, run_paths, labels, label, parent_levels=1):
+        """
+        Given tasks = [(ffield1, struct_path1), (ffield2, struct_path2), …],
+        group them by the parent directory of each run_path defined by parent_levels.
+
+        Returns: [
+            [[structA, structB, …], [ffieldA, ffieldB, …]],
+            [[structC, structD, …], [ffieldC, ffieldD, …]],
+            …
+        ]
+        """
+        def get_parent(path, parent_levels):
+            p = Path(path)
+            for _ in range(parent_levels):
+                p = p.parent
+            return p
+
+        index = labels.index(label)
+        groups = defaultdict(lambda: {label: [] for label in labels + ['run_path']})
+
+        for i, run_path in enumerate(run_paths):
+            parent = get_parent(run_path, parent_levels)
+            for j, label in enumerate(labels):
+                groups[parent][label].append(tasks[i][j])
+            groups[parent]['run_path'].append(run_paths[i])
+
+        # Build the final output in arbitrary parent‐directory order:
+        batched_tasks = []
+        run_paths = []
+        for parent, contents in groups.items():
+            use_batch = []
+            for label in labels:
+                use_batch.append(contents[label])
+            batched_tasks.append(use_batch)
+            run_paths.append(parent)
+
+        return batched_tasks, run_paths
+
     def get_python(self):
         try:
             python_exe = os.path.join(os.environ['CONDA_PREFIX'], 'bin', 'python')
@@ -172,7 +217,11 @@ class LammpsMatEnsemble(MatEnsembleJob):
     def read_structure_from_lammps(self, lmp_file_path):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return LammpsData.from_file(lmp_file_path, atom_style=self.options['atom_style']).structure
+            try: # For lammps-data format
+                return LammpsData.from_file(lmp_file_path, atom_style=self.options['atom_style']).structure
+            except KeyError: # For lammps-dump-text format
+                aaa = AseAtomsAdaptor()
+                return aaa.get_structure(read(lmp_file_path, format='lammps-dump-text'))
 
     def sorting_function(self, path):
         ''' Sort by structure length '''
@@ -199,7 +248,7 @@ class JaxReaxFFMatEnsemble(MatEnsembleJob):
     def get_tasks(self, paths, tasks_per_path):
         return [tasks_per_path for path in paths]
 
-    def dict_to_argv(self, d):
+    def dict_to_argv(self, d, bool_arg=True):
         """
         Turn a dict of {option_name: value} into a flat list of CLI args:
           {"foo": "bar", "baz": 1, "flag": True}
@@ -210,8 +259,10 @@ class JaxReaxFFMatEnsemble(MatEnsembleJob):
         for k, v in d.items():
             flag = f"--{k}"
             if isinstance(v, bool):
-                if v:
-                    argv.append(flag)
+                if v and bool_arg: # Pass argument as bool
+                    argv.extend([flag, str(v)])
+                else:
+                    argv.append(flag) # Treat as single flag
             else:
                 argv.extend([flag, str(v)])
         return argv
@@ -228,6 +279,5 @@ class JaxReaxFFMatEnsemble(MatEnsembleJob):
         
         return task_arg_strs
 
-    def generic_task_command(self, python_file):
-        python_exe = self.get_python()
-        return ''.join([python_exe] + [' '] + [python_file])
+    def generic_task_command(self):
+        pass

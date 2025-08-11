@@ -1,0 +1,29 @@
+# ReaxFF Layout
+
+output_format: 'reaxff' # consistent tag across all .yaml
+
+generation_parameters:
+  runs_to_generate: 1
+  output_directory: '/pscratch/sd/r/rym/EnsembleFFFit/ForceFields/inputs_directory'
+
+default_weights: # Default is 50/50 0 or 1
+  energy:
+    type: 'binary'
+    min: 0.0
+    max: 5.0
+    split: 0.0
+  forces:
+    type: 'binary'
+    min: 0.0
+    max: 1.0
+    split: 0.0
+
+input_paths:
+  "Validation Set":
+    directories:
+      - /pscratch/sd/r/rym/EnsembleFFFit/DFT/vaspFlux/Bi2Se3/
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/EnsembleFFFit/DFT/vaspFlux/Bi2Se3/Bi-Se/Bi2Se3/mp-541837
+      get_divisors: True
+    forces: True

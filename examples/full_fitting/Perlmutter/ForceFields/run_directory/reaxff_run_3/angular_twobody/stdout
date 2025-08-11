@@ -1,0 +1,267 @@
+[INFO] Force field field is read
+[INFO] Parameter file is read, there are 41 parameters to be optimized!
+[INFO] Validation data is provided!
+[INFO] Force field field is read
+[INFO] Parameter file is read, there are 41 parameters to be optimized!
+[INFO] Validation data is provided!
+[INFO] Force field field is read
+[INFO] Parameter file is read, there are 41 parameters to be optimized!
+[INFO] Validation data is provided!
+Multithreaded interaction list counting took 6.08 secs with 128 threads
+Cost without aligning: 1189325.0
+nonbonded:             659992.0
+bonded:                529333.0
+Number of clusters:    2
+Cost after aligning:   1767501.0
+nonbonded:             928494.0
+bonded:                839007.0
+****************************************
+Trial-1 is starting...
+****************************************
+Iteration: 0
+Energy minimization took 71.6164 sec.
+  Total pot. E: -356641.51 kcal/mol
+  RMSG > 1e+00 count:66
+  RMSG > 2e+00 count:35
+  RMSG > 5e+00 count:26
+True training loss: 563863.02
+True validation loss: 935.59
+True total loss: 564798.61
+Lowest true total loss so far: 564798.61
+funv.ev 20, surrogate loss after loss minim.: 269133.91
+Iteration took 160.9600
+****************************************
+Iteration: 1
+Energy minimization took 25.2083 sec.
+  Total pot. E: -400988.70 kcal/mol
+  RMSG > 1e+00 count:65
+  RMSG > 2e+00 count:40
+  RMSG > 5e+00 count:29
+True training loss: 334083.84
+True validation loss: 1008.95
+True total loss: 335092.79
+Lowest true total loss so far: 335092.79
+funv.ev 111, surrogate loss after loss minim.: 125476.80
+Iteration took 43.9146
+****************************************
+Iteration: 2
+Energy minimization took 25.1687 sec.
+  Total pot. E: -582533.51 kcal/mol
+  RMSG > 1e+00 count:65
+  RMSG > 2e+00 count:46
+  RMSG > 5e+00 count:33
+True training loss: 971746.80
+True validation loss: 689.36
+True total loss: 972436.16
+funv.ev 108, surrogate loss after loss minim.: 155199.15
+Iteration took 43.3358
+****************************************
+Iteration: 3
+Energy minimization took 25.1716 sec.
+  Total pot. E: -439909.51 kcal/mol
+  RMSG > 1e+00 count:63
+  RMSG > 2e+00 count:38
+  RMSG > 5e+00 count:31
+True training loss: 262386.24
+True validation loss: 819.06
+True total loss: 263205.30
+Lowest true total loss so far: 263205.30
+funv.ev 29, surrogate loss after loss minim.: 201920.70
+Iteration took 30.3087
+****************************************
+Iteration: 4
+Energy minimization took 25.1789 sec.
+  Total pot. E: -472175.94 kcal/mol
+  RMSG > 1e+00 count:63
+  RMSG > 2e+00 count:41
+  RMSG > 5e+00 count:31
+True training loss: 229794.76
+True validation loss: 762.83
+True total loss: 230557.59
+Lowest true total loss so far: 230557.59
+funv.ev 115, surrogate loss after loss minim.: 150124.52
+Iteration took 44.5322
+****************************************
+Iteration: 5
+Energy minimization took 25.1573 sec.
+  Total pot. E: -540861.76 kcal/mol
+  RMSG > 1e+00 count:71
+  RMSG > 2e+00 count:49
+  RMSG > 5e+00 count:36
+True training loss: 315122.05
+True validation loss: 831.94
+True total loss: 315953.99
+Iteration took 25.5065
+Trial-1 ended, loss value: 230557.59
+Lowest loss so far        : 230557.59
+Multithreaded interaction list counting took 5.93 secs with 128 threads
+Cost without aligning: 1189325.0
+nonbonded:             659992.0
+bonded:                529333.0
+Number of clusters:    2
+Cost after aligning:   1767501.0
+nonbonded:             928494.0
+bonded:                839007.0
+****************************************
+Trial-1 is starting...
+****************************************
+Iteration: 0
+Energy minimization took 71.9473 sec.
+  Total pot. E: -356649.20 kcal/mol
+  RMSG > 1e+00 count:66
+  RMSG > 2e+00 count:35
+  RMSG > 5e+00 count:26
+True training loss: 563189.23
+True validation loss: 935.59
+True total loss: 564124.83
+Lowest true total loss so far: 564124.83
+funv.ev 20, surrogate loss after loss minim.: 268822.90
+Iteration took 161.0925
+****************************************
+Iteration: 1
+Energy minimization took 25.2333 sec.
+  Total pot. E: -400748.14 kcal/mol
+  RMSG > 1e+00 count:68
+  RMSG > 2e+00 count:41
+  RMSG > 5e+00 count:29
+True training loss: 316913.75
+True validation loss: 1027.08
+True total loss: 317940.83
+Lowest true total loss so far: 317940.83
+funv.ev 115, surrogate loss after loss minim.: 123846.83
+Iteration took 44.7415
+****************************************
+Iteration: 2
+Energy minimization took 25.2015 sec.
+  Total pot. E: -561053.89 kcal/mol
+  RMSG > 1e+00 count:66
+  RMSG > 2e+00 count:45
+  RMSG > 5e+00 count:35
+True training loss: 1619386.16
+True validation loss: 649.95
+True total loss: 1620036.11
+funv.ev 111, surrogate loss after loss minim.: 128775.55
+Iteration took 44.0105
+****************************************
+Iteration: 3
+Energy minimization took 25.1864 sec.
+  Total pot. E: -526351.95 kcal/mol
+  RMSG > 1e+00 count:63
+  RMSG > 2e+00 count:38
+  RMSG > 5e+00 count:33
+True training loss: 271271.96
+True validation loss: 859.19
+True total loss: 272131.15
+Lowest true total loss so far: 272131.15
+funv.ev 102, surrogate loss after loss minim.: 134912.54
+Iteration took 42.5152
+****************************************
+Iteration: 4
+Energy minimization took 25.1877 sec.
+  Total pot. E: -518161.34 kcal/mol
+  RMSG > 1e+00 count:56
+  RMSG > 2e+00 count:42
+  RMSG > 5e+00 count:30
+True training loss: 1506751.32
+True validation loss: 698.55
+True total loss: 1507449.87
+funv.ev 110, surrogate loss after loss minim.: 113447.30
+Iteration took 43.8272
+****************************************
+Iteration: 5
+Energy minimization took 25.2139 sec.
+  Total pot. E: -609145.66 kcal/mol
+  RMSG > 1e+00 count:61
+  RMSG > 2e+00 count:41
+  RMSG > 5e+00 count:30
+True training loss: 2070702.43
+True validation loss: 751.23
+True total loss: 2071453.65
+Iteration took 25.5648
+Trial-1 ended, loss value: 272131.15
+Lowest loss so far        : 272131.15
+Multithreaded interaction list counting took 5.81 secs with 128 threads
+Cost without aligning: 1189325.0
+nonbonded:             659992.0
+bonded:                529333.0
+Number of clusters:    2
+Cost after aligning:   1767501.0
+nonbonded:             928494.0
+bonded:                839007.0
+****************************************
+Trial-1 is starting...
+****************************************
+Iteration: 0
+Energy minimization took 71.9741 sec.
+  Total pot. E: -356640.35 kcal/mol
+  RMSG > 1e+00 count:66
+  RMSG > 2e+00 count:35
+  RMSG > 5e+00 count:26
+True training loss: 563147.68
+True validation loss: 935.59
+True total loss: 564083.27
+Lowest true total loss so far: 564083.27
+funv.ev 20, surrogate loss after loss minim.: 268688.26
+Iteration took 161.2696
+****************************************
+Iteration: 1
+Energy minimization took 25.2159 sec.
+  Total pot. E: -400974.48 kcal/mol
+  RMSG > 1e+00 count:63
+  RMSG > 2e+00 count:42
+  RMSG > 5e+00 count:28
+True training loss: 351025.87
+True validation loss: 984.37
+True total loss: 352010.24
+Lowest true total loss so far: 352010.24
+funv.ev 114, surrogate loss after loss minim.: 115181.50
+Iteration took 44.5701
+****************************************
+Iteration: 2
+Energy minimization took 25.2040 sec.
+  Total pot. E: -565151.64 kcal/mol
+  RMSG > 1e+00 count:63
+  RMSG > 2e+00 count:44
+  RMSG > 5e+00 count:34
+True training loss: 520497.54
+True validation loss: 639.14
+True total loss: 521136.68
+funv.ev 110, surrogate loss after loss minim.: 130371.05
+Iteration took 43.8521
+****************************************
+Iteration: 3
+Energy minimization took 25.1843 sec.
+  Total pot. E: -519851.22 kcal/mol
+  RMSG > 1e+00 count:62
+  RMSG > 2e+00 count:35
+  RMSG > 5e+00 count:28
+True training loss: 1338274.13
+True validation loss: 856.64
+True total loss: 1339130.78
+funv.ev 113, surrogate loss after loss minim.: 162381.42
+Iteration took 44.3913
+****************************************
+Iteration: 4
+Energy minimization took 25.1727 sec.
+  Total pot. E: -573405.76 kcal/mol
+  RMSG > 1e+00 count:64
+  RMSG > 2e+00 count:48
+  RMSG > 5e+00 count:31
+True training loss: 9384572.76
+True validation loss: 1788.78
+True total loss: 9386361.54
+funv.ev 110, surrogate loss after loss minim.: 139161.92
+Iteration took 43.8223
+****************************************
+Iteration: 5
+Energy minimization took 25.2041 sec.
+  Total pot. E: -477314.96 kcal/mol
+  RMSG > 1e+00 count:61
+  RMSG > 2e+00 count:44
+  RMSG > 5e+00 count:30
+True training loss: 687440.29
+True validation loss: 717.70
+True total loss: 688157.99
+Iteration took 25.5546
+Trial-1 ended, loss value: 352010.24
+Lowest loss so far        : 352010.24

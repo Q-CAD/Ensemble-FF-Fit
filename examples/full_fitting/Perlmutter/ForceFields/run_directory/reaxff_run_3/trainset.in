@@ -1,0 +1,108 @@
+ENERGY
+#Weight Sign Label/Divisor... Relative Energy
+ 0.5   +   amorphous_amorphous_amorphous1 /27   -   Bi2Se3_mp-541837_volume_1 /3       90.957
+ 0.225   +   amorphous_amorphous_amorphous10 /27   -   Bi2Se3_mp-541837_volume_1 /3       65.549
+ 1.725   +   amorphous_amorphous_amorphous11 /27   -   Bi2Se3_mp-541837_volume_1 /3       80.491
+ 1.05   +   amorphous_amorphous_amorphous12 /27   -   Bi2Se3_mp-541837_volume_1 /3       68.066
+ 0.175   +   amorphous_amorphous_amorphous13 /27   -   Bi2Se3_mp-541837_volume_1 /3       55.604
+ 0.275   +   amorphous_amorphous_amorphous14 /27   -   Bi2Se3_mp-541837_volume_1 /3       59.304
+ 0.325   +   amorphous_amorphous_amorphous15 /27   -   Bi2Se3_mp-541837_volume_1 /3       102.837
+ 1.25   +   amorphous_amorphous_amorphous16 /27   -   Bi2Se3_mp-541837_volume_1 /3       73.707
+ 2.15   +   amorphous_amorphous_amorphous2 /27   -   Bi2Se3_mp-541837_volume_1 /3       73.029
+ 0.4   +   amorphous_amorphous_amorphous3 /27   -   Bi2Se3_mp-541837_volume_1 /3       59.492
+ 1.025   +   amorphous_amorphous_amorphous4 /27   -   Bi2Se3_mp-541837_volume_1 /3       62.241
+ 0.75   +   amorphous_amorphous_amorphous5 /27   -   Bi2Se3_mp-541837_volume_1 /3       94.019
+ 1.725   +   amorphous_amorphous_amorphous6 /27   -   Bi2Se3_mp-541837_volume_1 /3       53.48
+ 1.4   +   amorphous_amorphous_amorphous7 /27   -   Bi2Se3_mp-541837_volume_1 /3       64.604
+ 0.65   +   amorphous_amorphous_amorphous8 /27   -   Bi2Se3_mp-541837_volume_1 /3       78.128
+ 1.075   +   amorphous_amorphous_amorphous9 /27   -   Bi2Se3_mp-541837_volume_1 /3       67.287
+ 0.8   +   antisite_Bi_antisite2 /1   +   Training_Data_5_12_single_atom_Se /1   -   Training_Data_5_12_single_atom_Bi /1   -   Bi4Se3_mp-27607_pristine /1       39.109
+ 1.4   +   antisite_Bi_antisite3 /1   +   Training_Data_5_12_single_atom_Se /1   -   Training_Data_5_12_single_atom_Bi /1   -   Bi4Se3_mp-27607_pristine /1       32.914
+ 0.65   +   antisite_Se_antisite0 /1   +   Training_Data_5_12_single_atom_Bi /1   -   Training_Data_5_12_single_atom_Se /1   -   Bi4Se3_mp-27607_pristine /1       45.309
+ 0.475   +   antisite_Se_antisite1 /1   +   Training_Data_5_12_single_atom_Bi /1   -   Training_Data_5_12_single_atom_Se /1   -   Bi4Se3_mp-27607_pristine /1       -3.906
+ 0.625   +   mp-27607_vacancy_vacancy0 /1   +   Training_Data_5_12_single_atom_Bi /1   -   Bi4Se3_mp-27607_pristine /1       111.128
+ 2.375   +   mp-27607_vacancy_vacancy1 /1   +   Training_Data_5_12_single_atom_Bi /1   -   Bi4Se3_mp-27607_pristine /1       107.142
+ 0.4   +   mp-27607_vacancy_vacancy2 /1   +   Training_Data_5_12_single_atom_Se /1   -   Bi4Se3_mp-27607_pristine /1       125.68
+ 0.425   +   mp-27607_vacancy_vacancy3 /1   +   Training_Data_5_12_single_atom_Se /1   -   Bi4Se3_mp-27607_pristine /1       119.974
+ 1.325   +   Bi2Se3_mp-909_volume_0_85 /1   -   Bi2Se3_mp-909_volume_1 /1       77.048
+ 0.325   +   Bi2Se3_mp-909_volume_0_88 /1   -   Bi2Se3_mp-909_volume_1 /1       46.292
+ 2.55   +   Bi2Se3_mp-909_volume_0_91 /1   -   Bi2Se3_mp-909_volume_1 /1       24.472
+ 2.025   +   Bi2Se3_mp-909_volume_0_94 /1   -   Bi2Se3_mp-909_volume_1 /1       10.239
+ 0.125   +   Bi2Se3_mp-909_volume_0_97 /1   -   Bi2Se3_mp-909_volume_1 /1       2.394
+ 0.575   +   Bi2Se3_mp-909_volume_1_03 /1   -   Bi2Se3_mp-909_volume_1 /1       2.206
+ 0.875   +   Bi2Se3_mp-909_volume_1_06 /1   -   Bi2Se3_mp-909_volume_1 /1       8.313
+ 0.7   +   Bi2Se3_mp-909_volume_1_09 /1   -   Bi2Se3_mp-909_volume_1 /1       17.696
+ 1.725   +   Bi2Se3_mp-909_volume_1_12 /1   -   Bi2Se3_mp-909_volume_1 /1       29.854
+ 0.575   +   Bi2Se3_mp-909_volume_1_15 /1   -   Bi2Se3_mp-909_volume_1 /1       44.398
+ 0.075   +   Bi2Se3_mp-23164_volume_0_85 /1   -   Bi2Se3_mp-23164_volume_1 /1       78.922
+ 2.425   +   Bi2Se3_mp-23164_volume_0_88 /1   -   Bi2Se3_mp-23164_volume_1 /1       47.526
+ 1.325   +   Bi2Se3_mp-23164_volume_0_91 /1   -   Bi2Se3_mp-23164_volume_1 /1       25.239
+ 3.2   +   Bi2Se3_mp-23164_volume_0_94 /1   -   Bi2Se3_mp-23164_volume_1 /1       10.644
+ 2.0   +   Bi2Se3_mp-23164_volume_0_97 /1   -   Bi2Se3_mp-23164_volume_1 /1       2.599
+ 0.65   +   Bi2Se3_mp-23164_volume_1_03 /1   -   Bi2Se3_mp-23164_volume_1 /1       2.18
+ 0.2   +   Bi2Se3_mp-23164_volume_1_06 /1   -   Bi2Se3_mp-23164_volume_1 /1       8.313
+ 2.925   +   Bi2Se3_mp-23164_volume_1_09 /1   -   Bi2Se3_mp-23164_volume_1 /1       17.742
+ 0.675   +   Bi2Se3_mp-23164_volume_1_12 /1   -   Bi2Se3_mp-23164_volume_1 /1       30.0
+ 0.075   +   Bi2Se3_mp-23164_volume_1_15 /1   -   Bi2Se3_mp-23164_volume_1 /1       44.629
+ 0.2   +   Bi2Se3_mp-541837_volume_0_85 /1   -   Bi2Se3_mp-541837_volume_1 /1       59.357
+ 0.5   +   Bi2Se3_mp-541837_volume_0_88 /1   -   Bi2Se3_mp-541837_volume_1 /1       35.689
+ 0.175   +   Bi2Se3_mp-541837_volume_0_91 /1   -   Bi2Se3_mp-541837_volume_1 /1       18.919
+ 0.5   +   Bi2Se3_mp-541837_volume_0_94 /1   -   Bi2Se3_mp-541837_volume_1 /1       7.949
+ 3.225   +   Bi2Se3_mp-541837_volume_0_97 /1   -   Bi2Se3_mp-541837_volume_1 /1       1.906
+ 0.175   +   Bi2Se3_mp-541837_volume_1_03 /1   -   Bi2Se3_mp-541837_volume_1 /1       1.664
+ 1.05   +   Bi2Se3_mp-541837_volume_1_06 /1   -   Bi2Se3_mp-541837_volume_1 /1       6.329
+ 0.825   +   Bi2Se3_mp-541837_volume_1_09 /1   -   Bi2Se3_mp-541837_volume_1 /1       13.526
+ 3.225   +   Bi2Se3_mp-541837_volume_1_12 /1   -   Bi2Se3_mp-541837_volume_1 /1       22.852
+ 1.1   +   Bi2Se3_mp-541837_volume_1_15 /1   -   Bi2Se3_mp-541837_volume_1 /1       33.973
+ 2.2   +   Bi3Se4_mp-542615_volume_0_85 /1   -   Bi3Se4_mp-542615_volume_1 /1       80.635
+ 0.675   +   Bi3Se4_mp-542615_volume_0_88 /1   -   Bi3Se4_mp-542615_volume_1 /1       48.336
+ 0.2   +   Bi3Se4_mp-542615_volume_0_91 /1   -   Bi3Se4_mp-542615_volume_1 /1       25.497
+ 1.9   +   Bi3Se4_mp-542615_volume_0_94 /1   -   Bi3Se4_mp-542615_volume_1 /1       10.627
+ 0.675   +   Bi3Se4_mp-542615_volume_0_97 /1   -   Bi3Se4_mp-542615_volume_1 /1       2.474
+ 1.4   +   Bi3Se4_mp-542615_volume_1_03 /1   -   Bi3Se4_mp-542615_volume_1 /1       2.379
+ 0.15   +   Bi3Se4_mp-542615_volume_1_06 /1   -   Bi3Se4_mp-542615_volume_1 /1       8.813
+ 1.9   +   Bi3Se4_mp-542615_volume_1_09 /1   -   Bi3Se4_mp-542615_volume_1 /1       18.816
+ 1.075   +   Bi3Se4_mp-542615_volume_1_12 /1   -   Bi3Se4_mp-542615_volume_1 /1       31.758
+ 0.7   +   Bi3Se4_mp-542615_volume_1_15 /1   -   Bi3Se4_mp-542615_volume_1 /1       47.089
+ 1.1   +   Bi4Se3_mp-27607_volume_0_85 /1   -   Bi4Se3_mp-27607_volume_1 /1       82.15
+ 0.675   +   Bi4Se3_mp-27607_volume_0_88 /1   -   Bi4Se3_mp-27607_volume_1 /1       49.4
+ 2.55   +   Bi4Se3_mp-27607_volume_0_91 /1   -   Bi4Se3_mp-27607_volume_1 /1       26.142
+ 0.875   +   Bi4Se3_mp-27607_volume_0_94 /1   -   Bi4Se3_mp-27607_volume_1 /1       10.968
+ 1.675   +   Bi4Se3_mp-27607_volume_0_97 /1   -   Bi4Se3_mp-27607_volume_1 /1       2.607
+ 1.975   +   Bi4Se3_mp-27607_volume_1_03 /1   -   Bi4Se3_mp-27607_volume_1 /1       2.238
+ 0.825   +   Bi4Se3_mp-27607_volume_1_06 /1   -   Bi4Se3_mp-27607_volume_1 /1       8.594
+ 0.85   +   Bi4Se3_mp-27607_volume_1_09 /1   -   Bi4Se3_mp-27607_volume_1 /1       18.394
+ 2.95   +   Bi4Se3_mp-27607_volume_1_12 /1   -   Bi4Se3_mp-27607_volume_1 /1       31.166
+ 1.3   +   Bi4Se3_mp-27607_volume_1_15 /1   -   Bi4Se3_mp-27607_volume_1 /1       46.419
+ 1.8   +   BiSe_mp-27902_volume_0_85 /1   -   BiSe_mp-27902_volume_1 /1       47.117
+ 2.475   +   BiSe_mp-27902_volume_0_88 /1   -   BiSe_mp-27902_volume_1 /1       28.362
+ 2.5   +   BiSe_mp-27902_volume_0_91 /1   -   BiSe_mp-27902_volume_1 /1       15.035
+ 1.475   +   BiSe_mp-27902_volume_0_94 /1   -   BiSe_mp-27902_volume_1 /1       6.321
+ 2.05   +   BiSe_mp-27902_volume_0_97 /1   -   BiSe_mp-27902_volume_1 /1       1.503
+ 0.225   +   BiSe_mp-27902_volume_1_03 /1   -   BiSe_mp-27902_volume_1 /1       1.292
+ 0.125   +   BiSe_mp-27902_volume_1_06 /1   -   BiSe_mp-27902_volume_1 /1       4.942
+ 1.05   +   BiSe_mp-27902_volume_1_09 /1   -   BiSe_mp-27902_volume_1 /1       10.592
+ 0.5   +   BiSe_mp-27902_volume_1_12 /1   -   BiSe_mp-27902_volume_1 /1       17.901
+ 0.55   +   BiSe_mp-27902_volume_1_15 /1   -   BiSe_mp-27902_volume_1 /1       26.651
+ 0.575   +   BiSe_mp-568844_volume_0_85 /1   -   BiSe_mp-568844_volume_1 /1       30.934
+ 1.925   +   BiSe_mp-568844_volume_0_88 /1   -   BiSe_mp-568844_volume_1 /1       18.632
+ 2.25   +   BiSe_mp-568844_volume_0_91 /1   -   BiSe_mp-568844_volume_1 /1       9.914
+ 1.45   +   BiSe_mp-568844_volume_0_94 /1   -   BiSe_mp-568844_volume_1 /1       4.194
+ 1.4   +   BiSe_mp-568844_volume_0_97 /1   -   BiSe_mp-568844_volume_1 /1       1.013
+ 1.55   +   BiSe_mp-568844_volume_1_03 /1   -   BiSe_mp-568844_volume_1 /1       0.889
+ 0.475   +   BiSe_mp-568844_volume_1_06 /1   -   BiSe_mp-568844_volume_1 /1       3.334
+ 5.0   +   BiSe_mp-568844_volume_1_09 /1   -   BiSe_mp-568844_volume_1 /1       7.123
+ 1.775   +   BiSe_mp-568844_volume_1_12 /1   -   BiSe_mp-568844_volume_1 /1       11.956
+ 1.6   +   BiSe_mp-568844_volume_1_15 /1   -   BiSe_mp-568844_volume_1 /1       17.733
+ 0.175   +   As-Se_Bi2Se3_mp-909 /4   -   Bi_Bi_mp-23152 /6   -   Se_Se_mp-14 /4       -37.017
+ 0.125   +   Bi2Se_mp-1182077_volume_1 /8   -   Bi_Bi_mp-23152 /6   -   Se_Se_mp-14 /12       -8.0
+ 0.6   +   Bi2Se_mp-1214190_volume_1 /4   -   Bi_Bi_mp-23152 /6   -   Se_Se_mp-14 /12       -12.487
+ 1.525   +   Bi2Se3_mp-23164_volume_1 /4   -   Bi_Bi_mp-23152 /6   -   Se_Se_mp-14 /4       -44.613
+ 0.15   +   Bi2Se3_mp-541837_volume_1 /3   -   Bi_Bi_mp-23152 /6   -   Se_Se_mp-14 /4       -46.494
+ 1.475   +   Bi3Se4_mp-542615_volume_1 /3   -   Bi_Bi_mp-23152 /4   -   Se_Se_mp-14 /3       -53.51
+ 0.125   +   Bi4Se3_mp-27607_volume_1 /3   -   Bi_Bi_mp-23152 /3   -   Se_Se_mp-14 /4       -46.435
+ 1.9   +   BiSe_mp-27902_volume_1 /6   -   Bi_Bi_mp-23152 /12   -   Se_Se_mp-14 /12       -15.391
+ 0.975   +   BiSe_mp-568844_volume_1 /4   -   Bi_Bi_mp-23152 /12   -   Se_Se_mp-14 /12       -9.338
+ 0.675   +   Bi-Se_BiSe_no_gap /3   -   Bi_Bi_mp-23152 /12   -   Se_Se_mp-14 /12       -10.593
+ 1.9   +   Bi-Se_BiSe2_from_MD /1   -   Bi_Bi_mp-23152 /12   -   Se_Se_mp-14 /6       -13.656
+ENDENERGY

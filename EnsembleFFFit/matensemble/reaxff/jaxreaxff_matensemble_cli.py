@@ -37,7 +37,6 @@ def main():
   parser.add_argument("--check_files", "-cfs", nargs='+',
                         help="Names of argparse keys ['init_FF', 'params', 'geo', 'train_file', 'valid_file', 'valid_geo_file'] to check for in the --run_directory",
                         default=['init_FF'])
-  parser.add_argument("--jaxreaxff_task", "-jt", help="Name of the python script used to interface with LAMMPs", default='jaxreaxff_task.py')
 
   parser.add_argument("--cpus_per_task", "-cpt", help="CPUs per task", type=int, default=16)
   parser.add_argument("--gpus_per_task", "-gpt", help="GPUs per task", type=int, default=1)
@@ -168,16 +167,10 @@ def run_reaxff(args):
   # Initialize the JaxReaxFF object
   jaxreaxff_matensemble = JaxReaxFFMatEnsemble(args.run_directory, args.inputs_directory, **options)
 
-  # Generate the task command path command by checking the inputs directory
-  jaxreaxff_task_command = os.path.abspath(os.path.join(args.inputs_directory, args.jaxreaxff_task))
-  if not os.path.isfile(jaxreaxff_task_command):
-    raise ValueError(f'Invalid task command {jaxreaxff_task_command}; file does not exist!')
-  task_command = jaxreaxff_matensemble.generic_task_command(jaxreaxff_task_command)
-
   # Split the files to be checked in --run_directory vs --input_directory
   inputs_directory_keys = [key for key in options.keys() if key not in args.check_files]
 
-  # Generate the run paths and task arguments
+  # Generate the task arguments, run paths and task numbers
   labels = args.check_files + inputs_directory_keys
   task_arg_list, run_paths = jaxreaxff_matensemble.build_full_runs(root0=args.run_directory, files0=[options[c] for c in args.check_files],
                                                                   root1=args.inputs_directory, files1=[options[k] for k in inputs_directory_keys],
@@ -187,14 +180,14 @@ def run_reaxff(args):
   task_arg_strs = jaxreaxff_matensemble.dict_to_str_list(d=args, labels=labels, 
                                                          task_arg_list=task_arg_list, 
                                                          ignore_list=matensemble_arguments)
-
+  
   # Generate tasks per run based on user arguments
   tasks = jaxreaxff_matensemble.get_tasks(run_paths, args.fits_per_runpath)
 
   # Execute the MatEnsemble call
   dry_run = True if args.dry_run else False
   jaxreaxff_matensemble.run(dry_run=dry_run,
-                           task_command=task_command,
+                           task_command='jaxreaxff',
                            run_tasks=tasks,
                            cpus_per_task=args.cpus_per_task,
                            gpus_per_task=args.gpus_per_task,

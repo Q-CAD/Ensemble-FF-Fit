@@ -1,0 +1,13 @@
+# Pymatgen specific user settings
+user_incar_settings: {ALGO: Normal,
+                      EDIFF: 1.0e-05, 
+                      EDIFFG: -0.01, 
+                      ISIF: 2, 
+                      NPAR: 16, 
+                      KPAR: 8, 
+                      ISMEAR: 0, 
+                      SIGMA: 0.03, 
+                      IVDW: 12,
+                      NSW: 0}  
+user_kpoints_settings: {grid_density: 1000} 
+

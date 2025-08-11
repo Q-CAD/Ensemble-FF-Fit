@@ -12,7 +12,7 @@ def submit_and_get_id(workdir, submission_file):
     """
     orig_cwd = os.getcwd()
     os.chdir(workdir)
-    print(f"[Submitting job {os.path.join(workdir, submission_file)}")
+    print(f"Submitting job {os.path.join(workdir, submission_file)}")
     try:
         result = subprocess.run(
             ["sbatch", submission_file],
@@ -68,17 +68,19 @@ def check_job(jobid, workdir):
 
     return in_queue, done_flag, fail_flag, all_complete
 
-def handling_logic(in_queue, done_flag, fail_flag, all_complete, jobid):
+def handling_logic(in_queue, done_flag, fail_flag, all_complete, jobid,
+                   workdir, submission_file, resubmit, max_retries, 
+                   retry_count, poll_interval):
     """
     Resubmission or exit logic.
     """
     if all_complete:
         print(f"Workflow for Job {jobid} finished; check subdirectories for job errors.")
-        return    
+        return False    
         
     elif in_queue:
         print(f"Job {jobid} still in queue...")
-        return 
+        return True
 
     # At this point, jobid is no longer in the queue
     elif done_flag:
@@ -95,7 +97,7 @@ def handling_logic(in_queue, done_flag, fail_flag, all_complete, jobid):
             )
         else:
             print(f"Exiting")
-            return 
+            return False
             
     elif fail_flag:
         print(f"Job {jobid} exited the queue with failure; check outputs. Exiting.")
@@ -103,7 +105,7 @@ def handling_logic(in_queue, done_flag, fail_flag, all_complete, jobid):
             
     else:
         print(f"Job {jobid} not in queue.")
-        return
+        return False
 
 def clean_directory(directory):
     """
@@ -131,7 +133,9 @@ def MatEnsemble_submission_wrapper(
     # Step 0: check existing files
     unknown_id = 'unknown_id'
     in_queue, done_flag, fail_flag, all_complete = check_job(unknown_id, workdir)
-    handling_logic(in_queue, done_flag, fail_flag, all_complete, unknown_id)
+    handling_logic(in_queue, done_flag, fail_flag, all_complete, unknown_id, 
+                   workdir, submission_file, resubmit, max_retries, 
+                   retry_count, poll_interval)
     
     # Step 1: cleanup old markers
     clean_directory(workdir)
@@ -141,7 +145,10 @@ def MatEnsemble_submission_wrapper(
     print(f"Submitted job {jobid}")
 
     # Step 3: poll until job leaves the queue
-    while True:
+    run = True
+    while run:
         sleep(poll_interval)
         in_queue, done_flag, fail_flag, all_complete = check_job(jobid, workdir)
-        handling_logic(in_queue, done_flag, fail_flag, all_complete, jobid)
+        run = handling_logic(in_queue, done_flag, fail_flag, all_complete, jobid, 
+                             workdir, submission_file, resubmit, max_retries, 
+                             retry_count, poll_intervale)

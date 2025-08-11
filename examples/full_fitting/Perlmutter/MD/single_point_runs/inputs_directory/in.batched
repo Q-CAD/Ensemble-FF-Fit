@@ -1,0 +1,28 @@
+units real
+dimension 3
+boundary p p p
+atom_style charge
+box tilt large
+processors * * *
+newton on
+neighbor 3.0 bin
+neigh_modify every 1 delay 0 check yes
+
+read_data ${structure}
+
+pair_style reaxff ${control_filename} safezone 3.0 mincap 500
+pair_coeff * * ${ff_filename} Bi Se
+
+fix 1 all qeq/reax 1 0.0 10.0 1.0e-6 reaxff
+
+thermo          1
+thermo_style    custom step temp pe epair etotal press pxx pyy pzz lx ly lz vol density
+
+#------------------- SINGLE_POINT ---------------------
+run             0
+
+#------------------- ENERGY_MINIMIZATION ---------------------
+#min_style       fire
+#minimize        1e-6 1e-6 1000000 1000000
+#write_data      Min.data
+
