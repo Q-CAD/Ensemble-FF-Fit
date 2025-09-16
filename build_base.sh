@@ -27,13 +27,24 @@ fi
 
 # Create environment with desired conda packages (non-interactive)
 echo "Creating conda env (python=3.13, pymatgen, ase, mpi4py, scikit-learn, seaborn)..."
-conda create --yes --prefix "$ENV_PATH" python=3.13 cython pymatgen pymatgen-analysis-defects mp-api ase pymace mpi4py=4.0.3 scikit-learn seaborn frozendict py3dmol jupyter -c conda-forge
+conda create --yes --prefix "$ENV_PATH" \
+      python=3.13 \
+      pymatgen \
+      pymatgen-analysis-defects \
+      mp-api \
+      ase \
+      scikit-learn \
+      seaborn \
+      frozendict \
+      py3dmol \
+      jupyter \
+      -c conda-forge
 
 # Activate the environment
 source activate $ENV_PATH
 
 # Install ovito into the same prefix (uses a different channel)
-conda install -y --strict-channel-priority -c https://conda.ovito.org -c conda-forge ovito=3.12.1
+# conda install -y --strict-channel-priority -c https://conda.ovito.org -c conda-forge ovito=3.12.1
 
 # Use the environment's python and pip explicitly (guaranteed)
 ENV_PY="$ENV_PATH/bin/python"
@@ -81,61 +92,6 @@ REPO4="MatEnsemble"
 [ -d "$REPO4" ] && rm -rf "$REPO4"
 git clone https://github.com/Q-CAD/MatEnsemble.git "$REPO4"
 cd "$REPO4"
-
-# Clone and build LAMMPS
-module load PrgEnv-gnu/8.5.0
-module load cudatoolkit/12.4
-module load craype-accel-nvidia80
-
-export MPICH_GPU_SUPPORT_ENABLED=1
-
-# git clone https://github.com/lammps/lammps.git
-git clone -b patch_2Apr2025 https://github.com/lammps/lammps.git
-
-cd lammps
-mkdir build
-cd build
-
-cmake -D CMAKE_BUILD_TYPE=Release \
-      -D CMAKE_Fortran_COMPILER=ftn \
-      -D CMAKE_C_COMPILER=cc \
-      -D CMAKE_CXX_COMPILER=CC \
-      -D MPI_C_COMPILER=cc \
-      -D MPI_CXX_COMPILER=CC \
-      -D LAMMPS_EXCEPTIONS=ON \
-      -D BUILD_SHARED_LIBS=ON \
-      -D PKG_KOKKOS=yes \
-      -D Kokkos_ARCH_AMPERE80=ON \
-      -D Kokkos_ENABLE_CUDA=yes \
-      -D PKG_MOLECULE=on \
-      -D PKG_BODY=on \
-      -D PKG_RIGID=on \
-      -D PKG_MC=on \
-      -D PKG_MANYBODY=on \
-      -D PKG_REAXFF=on \
-      -D PKG_REPLICA=on \
-      -D PKG_QEQ=on \
-      -D PKG_INTERLAYER=on \
-      -D MLIAP_ENABLE_PYTHON=yes \
-      -D PKG_PYTHON=yes \
-      -D PKG_ML-SNAP=yes \
-      -D PKG_ML-IAP=yes \
-      -D PKG_ML-PACE=yes \
-      -D PKG_SPIN=yes \
-      -D CMAKE_POSITION_INDEPENDENT_CODE=ON -D CMAKE_EXE_FLAGS="-dynamic" ../cmake
-
-# Hack: Make twice to avoid errors with uncrecognized cuda flags, avoid sed issue
-make -j32
-conda deactivate
-find . -path '*/CMakeFiles/lmp.dir/flags.make*' -print \
-  -exec sed -i 's/ -Xcudafe --diag_suppress=unrecognized_pragma,--diag_suppress=128//' {} +
-source activate $ENV_PATH
-make -j32
-
-make install-python
-
-# return back to repo root and install MatEnsemble
-cd ../../
 "$ENV_PY" -m pip install --no-cache-dir -e . --no-deps
 cd ..
 

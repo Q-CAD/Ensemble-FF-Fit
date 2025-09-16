@@ -7,7 +7,14 @@ from EnsembleFFFit.matensemble.base import LammpsMatEnsemble
 def main():
     parser = argparse.ArgumentParser(description="Argument parser to run LAMMPs with Flux using Python")
 
+    # Parse NoneType for dictionary 
+    def none_or_str(value):
+        if value == 'None':
+            return None
+        return value
+
     # Add arguments
+
 
     # Run and input directories
     parser.add_argument("--run_directory", "-rd", help="Path to the run directory tree", default='run_directory')
@@ -17,12 +24,12 @@ def main():
     parser.add_argument("--check_files", "-cfs", nargs='+', 
                         help="Names of argparse keys ['ffield', 'in_lammps', 'control', 'structure', 'lammps_task'] to check for in the --run_directory", 
                         default=['ffield'])
-    parser.add_argument("--ffield", "-ff", help="Name of force field file", default='ffield')
-    parser.add_argument("--in_lammps", "-in", help="Name of the LAMMPs in file", default='in.matensemble')
-    parser.add_argument("--control", "-c", help="Name of the LAMMPs control file", default='control') # Build out for contiuation jobs here
-    parser.add_argument("--structure", "-s", help="Name of the .lmp file", default='structure.lmp') # Build out for continuation jobs here
+    parser.add_argument("--ffield", "-ff", type=none_or_str, help="Name of force field file", default='ffield')
+    parser.add_argument("--in_lammps", "-in", type=none_or_str, help="Name of the LAMMPs in file", default='in.matensemble')
+    parser.add_argument("--control", "-c", type=none_or_str, help="Name of the LAMMPs control file", default='control') # Build out for contiuation jobs here
+    parser.add_argument("--structure", "-s", type=none_or_str, help="Name of the .lmp file", default='structure.lmp') # Build out for continuation jobs here
     
-    parser.add_argument("--lammps_task", "-lt", help="Name of the python script used to interface with LAMMPs", default='lammps_task.py')
+    parser.add_argument("--lammps_task", "-lt", type=none_or_str, help="Name of the python script used to interface with LAMMPs", default='lammps_task.py')
     parser.add_argument("--lammps_task_order", "-lto", nargs='+', 
                         help="Order of system arguments to pass to --lammps_task, i.e., sys.argv[1] is 'ffield'", 
                         default=['ffield', 'in_lammps', 'control', 'structure'])
@@ -39,13 +46,15 @@ def main():
     run_lammps(args)
     
 def run_lammps(args):
+    # Construct an options dictionary and only keep keys without null values
     options = {'ffield': args.ffield, 
                'in_lammps': args.in_lammps,
                'control': args.control, 
                'structure': args.structure,
                'lammps_task': args.lammps_task,
                'atom_style': args.atom_style}
-    
+    options = {k: v for k, v in options.items() if v is not None}
+
     # Initialize the LAMMPs object
     lammps_matensemble = LammpsMatEnsemble(args.run_directory, args.inputs_directory, **options)
     
@@ -56,7 +65,7 @@ def run_lammps(args):
 
     # Split the files to be checked in --run_directory vs --input_directory
     inputs_directory_keys = [key for key in options.keys() if key not in args.check_files + ['lammps_task', 'atom_style']]
-   
+    
     # Generate the run paths and task arguments
     task_arg_list, run_paths = lammps_matensemble.build_full_runs(root0=args.run_directory, files0=[options[c] for c in args.check_files], 
                                                                   root1=args.inputs_directory, files1=[options[k] for k in inputs_directory_keys],
@@ -69,7 +78,7 @@ def run_lammps(args):
   
     # If batching is True (for many short runs, e.g., single-points or energy minimizations), batch the arguments
     if args.batch:
-        task_arg_list, run_paths = lammps_matensemble.batch_by_parent(task_arg_list, run_paths, args.check_files + inputs_directory_keys , 'structure')
+        task_arg_list, run_paths = lammps_matensemble.batch_by_parent(task_arg_list, run_paths, args.check_files + inputs_directory_keys) # 'structure')
         structure_paths = [task_arg_list[i][args.lammps_task_order.index('structure')][0] for i in range(len(task_arg_list))]
         tasks = lammps_matensemble.get_tasks(structure_paths, atoms_per_task=args.atoms_per_task)
     

@@ -26,6 +26,7 @@ generate_substitutions = "EnsembleFFFit.generation.substitutions.generate_substi
 generate_vdW_spacing = "EnsembleFFFit.generation.vdW_layers.generate_vdW_spacing_cli:main"
 
 jaxreaxff_matensemble = "EnsembleFFFit.matensemble.reaxff.jaxreaxff_matensemble_cli:main"
+mace_matensemble = "EnsembleFFFit.matensemble.mace.mace_matensemble_cli:main"
 lammps_matensemble = "EnsembleFFFit.matensemble.lammps.lammps_matensemble_cli:main"
 
 copy_by_pattern = "EnsembleFFFit.utils.copy_by_pattern_cli:main"

@@ -1,0 +1,26 @@
+units         metal
+atom_style    atomic
+atom_modify   map yes
+newton        on
+processors    * * *
+dimension 3
+boundary p p p
+
+read_data ${structure}
+
+dump       d1        all custom 1000 dump_*.dump id type x y z fx fy fz
+dump_modify d1 element ${elements}
+pair_style mliap unified ${ff_filename} 0 
+pair_coeff    * * ${elements}
+
+thermo          1
+thermo_style    custom step temp pe epair etotal press pxx pyy pzz lx ly lz vol density
+
+#------------------- SINGLE_POINT ---------------------
+run             0
+
+#------------------- ENERGY_MINIMIZATION ---------------------
+#min_style       fire
+#minimize        1e-6 1e-6 1000000 1000000
+#write_data      Min.data
+

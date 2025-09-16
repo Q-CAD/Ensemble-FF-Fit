@@ -1,0 +1,219 @@
+# General parameters
+
+#1  1  1  1.000  0.0  100           ! p_boc1     4c      Overcoordination parameter            
+#1  2  1  0.005  0.0  10            ! p_boc2      4d      Overcoordination parameter            
+#1  3  1 0.005      n/a n/a        ! -p_coa2    15      Valency angle conjugation parameter   
+#1  4  1 0.005      n/a n/a        ! p_trip4    20      Triple bond stabilisation parameter   
+#1  5  1 0.005      n/a n/a        ! p_trip3    20      Triple bond stabilisation parameter   
+#1  6  1 0.005      n/a n/a        ! k_c2       19      C2-correction                         
+#1  7  1  0.005  1.0  2.0           ! p_ovun6     12      Povun6 Undercoordination Eq(12)       
+#1  8  1 0.005  n/a n/a            ! p_trip2    20      Triple bond stabilisation parameter    
+#1  9  1  0.005  7.0  13.0          ! p_ovun7     12      Povun7 Undercoordination Eq(12)       
+#1 10  1  0.005  12.0 14.0          ! p_ovun8     12      Povun8 Undercoordination Eq(12)       
+#1 11  1 0.005     n/a n/a         ! p_trip1    20      Triple bond stabilization energy      
+#1 12  1 0.005     n/a n/a         ! n/a        21      Lower Taper-radius                    
+#1 13  1 0.005   4.0  10.0          ! R_cut      21      Upper Taper-radius, might not be optimizable                    
+#1 14  1 0.005     n/a n/a         ! p_fe1      6a      Fe dimer correction                   
+#1 15  1 0.005     n/a n/a         ! p_val6     13c     Valency undercoordination             
+#1 16  1 0.005   4  10           ! p_lp1        8       Plp1 Lone pair param in Eq(8)                  
+#1 17  1 0.005     n/a n/a         ! p_val9     13f     Valency angle                         
+#1 18  1 0.005     n/a n/a         ! p_val10    13g     Valency angle parameter               
+#1 19  1 0.005     n/a n/a         ! p_fe2      6a      Fe dimer correction                   
+#1 20  1 0.005     n/a n/a         ! p_pen2     14a     Double bond/angle parameter           
+#1 21  1 0.005     n/a n/a         ! p_pen3     14b     Double bond/angle parameter: overcoord
+#1 22  1 0.005     n/a n/a         ! p_pen4     14b     Double bond/angle parameter: overcoord
+#1 23  1 0.005     n/a n/a         ! p_fe3      6a      Fe dimer correction                   
+#1 24  1 0.005     n/a n/a         ! p_tor2     16b     Torsion/BO parameter                  
+#1 25  1 0.005     n/a n/a         ! p_tor3     16c     Torsion overcoordination              
+#1 26  1 0.005     n/a n/a         ! p_tor4     16c     Torsion overcoordination              
+#1 27  1 0.005     n/a n/a         ! p_elho     26a     Reserved                              
+#1 28  1 0.005     n/a n/a         ! p_cot2     17b     Conjugation                           
+#1 29  1 0.005   1.0 2.0            ! p_vdW1     23b     vdWaals shielding                     
+#1 30  1 0.005     n/a n/a         ! cutoff * 100       3a,b    Cutoff for bond order (*100)          
+#1 31  1 0.005   2 3             ! p_coa4       15      Valency angle conjugation parameter   
+#1 32  1 0.005   0.0 10             ! p_ovun4      11b     Povun4 Over/Undercoordination Eq(11b) 
+#1 33  1 0.100   0.0 50             ! p_ovun3      11b     Povun3 Over/Undercoordination Eq(11b) 
+#1 34  1 0.005   1.8 2.5         ! p_val8       13d     Valency/lone pair parameter           
+#1 35  1 0.005     n/a n/a         ! X_soft     25      ACKS2 softness parameter              
+#1 36  1 0.005     n/a n/a         ! unused     n/a     Scale factor (d) in dispersion (LJ)   
+#1 37  1 0.005     n/a n/a         ! p_val      27 via n_el     Gauss exponent for explicit electrons 
+#1 38  1 0.005     n/a n/a         ! n/a        13d     1: disable undecoord term in val angle
+#1 39  1 0.005     n/a n/a         ! p_coa3     15      Valency angle conjugation parameter 
+
+# Atom parameters
+
+# Bi
+#2  1  1 0.005   1.8 2.4         ! cov.r r_0^sigma       2       Sigma bond covalent radius
+#2  1  2 0.005   n/a n/a        ! valency      Val_i   3a, 4b, 5, 9a   Valency
+#2  1  3 0.005   n/a n/a        ! a.m  n/a     9a      Atomic mass
+#2  1  4 0.005   1.5 3.5         ! Rvdw  r_vdW   23a     van der Waals radius
+#2  1  5 0.005   0.0001 1.0      ! Evdw  D_ij    23a     van der Waals dissociation energy
+#2  1  6 0.005   0.0001 2.0      ! gammaEEM      gamma_i 24      gammaEEM; EEM shielding
+#2  1  7 0.005   0.0001 2.0      ! cov.r2        r_0^pi  2       Pi bond covalent radius
+#2  1  8 0.005   n/a n/a        ! #    Val_i^e 7, 8, 9 Number of valence electrons
+#2  1  9 0.005   8.0 14.0        ! alfa  alpha_ij        23b     van der Waals parameter
+#2  1 10 0.005   1.5  2.5        ! gammavdW      1/gamma_w       23b     van der Waals shielding
+#2  1 11 0.005   n/a n/a         ! valency      Val_j^angle     16c, 13c        Valency for 1,3-BO correction
+#2  1 12 0.005   n/a n/a         ! Eunder        p_ovun5 12      Undercoordination energy
+#2  1 13 0.005   n/a n/a         ! Eover p_i^xel2        26      eReaxFF, atom type parameter
+#2  1 14 0.005   0.0001 10       ! chiEEM        chi_i   24, 25  EEM electronegativity
+#2  1 15 0.005   0.0001 10       ! etaEEM        eta_i   24, 25  EEM hardness
+#2  1 16 0.005   n/a n/a         ! n.u. n/a     n/a     Donor or acceptor switch in H-bonds
+#2  1 17 0.005   1.0 2.0         ! cov r3        r_0^pipi        2       Double pi bond covalent radius
+#2  1 18 0.005   0.0 10.0        ! Elp   p_lp2   10      Lone pair energy
+#2  1 19 0.005   n/a n/a         ! Heat inc.    n/a     n/a     Atomic heat of formation
+#2  1 20 0.005   0.000  25.0     ! bo131 p_boc4  4e,f    Bond order correction
+#2  1 21 0.005   0.000  5.0      ! bo132 p_boc3  4e,f    Bond order correction
+#2  1 22 0.005   0.000  1.0      ! bo133 p_boc5  4e,f    Bond order correction
+#2  1 23 0.005   n/a n/a         ! softcut      C_i     25      Atomic softness cutoff parameter
+#2  1 24 0.005   n/a n/a         ! n.u. alpha, alpha_i  26, 26a eReaxFF, constant, dependent on atom type
+#2  1 25 0.005   -25.0 -0.0001   ! ov/un p_ovun2 12      Valence angle parameter
+#2  1 26 0.005   0.0001 10.0     ! val1  p_val3  13b -> 13a      Valence angle parameter
+#2  1 27 0.005   n/a n/a         ! n.u. beta, beta_i    26a     eReaxFF, constant, dependent on atom type
+#2  1 28 0.005   0.0001 10.0     ! val3  Val_i^’boc      3b      Number of lone pairs
+#2  1 29 0.005   0.0001 10.0     ! vval4 p_val5  13b     Valence angle parameter
+#2  1 30 0.005   n/a n/a         ! n.u. p_c1    23c     Inner wall vdW repulsion parameter
+#2  1 31 0.005   n/a n/a         ! n.u. p_c2    23c     Inner wall vdW repulsion parameter
+#2  1 32 0.005   n/a n/a         ! n.u. p_c3    23c     Inner wall vdW repulsion parameter
+
+# Se
+#2  2  1 0.005   1.5 2.2         ! cov.r r_0^sigma       2       Sigma bond covalent radius
+#2  2  2 0.005   n/a n/a        ! valency      Val_i   3a, 4b, 5, 9a   Valency
+#2  2  3 0.005   n/a n/a        ! a.m  n/a     9a      Atomic mass
+#2  2  4 0.005   1.5 3.5         ! Rvdw  r_vdW   23a     van der Waals radius
+#2  2  5 0.005   0.0001 1.0      ! Evdw  D_ij    23a     van der Waals dissociation energy
+#2  2  6 0.005   0.0001 2.0      ! gammaEEM      gamma_i 24      gammaEEM; EEM shielding
+#2  2  7 0.005   0.0001 2.0      ! cov.r2        r_0^pi  2       Pi bond covalent radius
+#2  2  8 0.005   n/a n/a         ! #    Val_i^e 7, 8, 9 Number of valence electrons
+#2  2  9 0.005   8.0 14.0        ! alfa  alpha_ij        23b     van der Waals parameter
+#2  2 10 0.005   4.0  6.0        ! gammavdW      1/gamma_w       23b     van der Waals shielding
+#2  2 11 0.005   n/a n/a         ! valency      Val_j^angle     16c, 13c        Valency for 1,3-BO correction
+#2  2 12 0.005   0.0001 50       ! Eunder        p_ovun5 12      Undercoordination energy
+#2  2 13 0.005   0.0001 150      ! Eover p_i^xel2        26      eReaxFF, atom type parameter # Might not be able to fit to this parameter
+#2  2 14 0.005   0.0001 10       ! chiEEM        chi_i   24, 25  EEM electronegativity
+#2  2 15 0.005   0.0001 10       ! etaEEM        eta_i   24, 25  EEM hardness
+#2  2 16 0.005   n/a n/a         ! n.u. n/a     n/a     Donor or acceptor switch in H-bonds
+#2  2 17 0.005   1.0 2.0         ! cov r3        r_0^pipi        2       Double pi bond covalent radius
+#2  2 18 0.005   0.0 10.0        ! Elp   p_lp2   10      Lone pair energy
+#2  2 19 0.005   n/a n/a         ! Heat inc.    n/a     n/a     Atomic heat of formation
+#2  2 20 0.005   0.000  25.0     ! bo131 p_boc4  4e,f    Bond order correction
+#2  2 21 0.005   0.000  5.0      ! bo132 p_boc3  4e,f    Bond order correction
+#2  2 22 0.005   0.000  1.0      ! bo133 p_boc5  4e,f    Bond order correction
+#2  2 23 0.005   n/a n/a         ! softcut      C_i     25      Atomic softness cutoff parameter
+#2  2 24 0.005   n/a n/a         ! n.u. alpha, alpha_i  26, 26a eReaxFF, constant, dependent on atom type
+#2  2 25 0.005   -25.0 -0.0001   ! ov/un p_ovun2 12      Valence angle parameter
+#2  2 26 0.005   0.0001 10.0     ! val1  p_val3  13b -> 13a      Valence angle parameter
+#2  2 27 0.005   n/a n/a         ! n.u. beta, beta_i    26a     eReaxFF, constant, dependent on atom type
+#2  2 28 0.005   0.0001 10.0     ! val3  Val_i^’boc      3b      Number of lone pairs
+#2  2 29 0.005   0.0001 10.0     ! vval4 p_val5  13b     Valence angle parameter
+#2  2 30 0.005   n/a n/a         ! n.u. p_c1    23c     Inner wall vdW repulsion parameter
+#2  2 31 0.005   n/a n/a         ! n.u. p_c2    23c     Inner wall vdW repulsion parameter
+#2  2 32 0.005   n/a n/a         ! n.u. p_c3    23c     Inner wall vdW repulsion parameter
+
+# Bond parameters
+
+# Bi-Bi
+3  1  1 0.0050   60.0 100        ! Edis  D_e^sigma       6, 11a  Sigma-bond dissociation energy
+#3  1  2 0.0050   10.0 200        ! Lppen D_e^pi  6       Pi-bond dissociation energy
+#3  1  3 0.005     0.0 50        ! n.u. D_e^pipi        6       Double pi-bond dissociation energy
+3  1  4 0.0050   -2.00 2.00      ! pbe1  p_be1   6       Bond energy parameter
+#3  1  5 0.0050   -1.00 2.00      ! pbo5  p_bo5   2       Double pi bond parameter
+#3  1  6 0.005   n/A  n/A        ! 13corr       Val’_i^boc      3b      1,3-Bond order correction
+#3  1  7 0.0050   0.0001  50.0    ! pbo6  p_bo6   2       Double pi bond order
+3  1  8 0.0050   0.0001  1.00    ! pbe2  p_ovun1 11a     Overcoordination penalty
+3  1  9 0.0050   0.1   25.0      ! pbo3  p_be2   6       Bond energy parameter
+#3  1 10 0.0050                  ! pbo4  p_bo3   2       Pi bond order parameter
+#3  1 11 0.0050                  ! n.u.  p_bo4   2       Pi bond order parameter
+#3  1 12 0.005   n/A  n/A        ! pbo1 unused  n/a     n/a
+#3  1 13 0.0050                  ! pbo2  p_bo1   2       Sigma bond order
+#3  1 14 0.0050                  ! ovcorr        p_bo2   2       Sigma bond order
+#3  1 15 0.005   n/A n/A         ! n.u. delta’_i        3a      Uncorrected BO overcoordination
+#3  1 16 0.005   n/A n/A         ! n.u. p_ij^xel1       27      e ReaxFF param; for adjusting number of electrons available to host atom
+
+# Se-Se
+##3  2  1 0.0050   20.0 75.0       ! Edis  D_e^sigma       6, 11a  Sigma-bond dissociation energy
+##3  2  2 0.0050   20.0 75.0        ! Lppen D_e^pi  6       Pi-bond dissociation energy
+#3  2  3 0.005     0.0 50        ! n.u. D_e^pipi        6       Double pi-bond dissociation energy
+##3  2  4 0.0050   -1.00 2.00      ! pbe1  p_be1   6       Bond energy parameter
+##3  2  5 0.0050   -1.00 2.00      ! pbo5  p_bo5   2       Double pi bond parameter
+#3  2  6 0.0050   n/A  n/A       ! 13corr       Val’_i^boc      3b      1,3-Bond order correction
+#3  2  7 0.0050   0.0001  50.0    ! pbo6  p_bo6   2       Double pi bond order
+##3  2  8 0.0050   0.0001  1.00    ! pbe2  p_ovun1 11a     Overcoordination penalty
+##3  2  9 0.0050   0.0001   25.0      ! pbo3  p_be2   6       Bond energy parameter
+#3  2 10 0.0050                   ! pbo4  p_bo3   2       Pi bond order parameter
+#3  2 11 0.0050                   ! n.u.  p_bo4   2       Pi bond order parameter
+#3  2  12 0.005  n/A  n/A        ! pbo1 unused  n/a     n/a
+#3  2 13 0.0050                   ! pbo2  p_bo1   2       Sigma bond order
+#3  2 14 0.0050                   ! ovcorr        p_bo2   2       Sigma bond order
+#3  2  15 0.005  n/A n/A         ! n.u. delta’_i        3a      Uncorrected BO overcoordination
+#3  2  16 0.005  n/A n/A         ! n.u. p_ij^xel1       27      e ReaxFF param; for adjusting number of electrons available to host atom
+
+# Bi-Se
+##3  3  1 0.005   50.0 250.0      ! Edis  D_e^sigma       6, 11a  Sigma-bond dissociation energy
+##3  3  2 0.005   40.0 200.0      ! Lppen D_e^pi  6       Pi-bond dissociation energy
+#3  3  3 0.0050    0.0001 50.0   ! n.u. D_e^pipi        6       Double pi-bond dissociation energy
+##3  3  4 0.005   -2.00 1.00      ! pbe1  p_be1   6       Bond energy parameter
+#3  3  5 0.0050   -1.00 2.00      ! pbo5  p_bo5   2       Double pi bond parameter
+#3  3  6 0.0050   n/A  n/A       ! 13corr       Val’_i^boc      3b      1,3-Bond order correction
+#3  3  7 0.0050    0.0001  50.0   ! pbo6  p_bo6   2       Double pi bond order
+##3  3  8 0.005    0.0001   1.00  ! pbe2  p_ovun1 11a     Overcoordination penalty
+##3  3  9 0.005    0.0001  25.0   ! pbo3  p_be2   6       Bond energy parameter
+#3  3  10 0.005                  ! pbo4  p_bo3   2       Pi bond order parameter
+##3  3  11 0.005                 ! n.u.  p_bo4   2       Pi bond order parameter
+#3  3  12 0.0050   n/A  n/A      ! pbo1 unused  n/a     n/a
+##3  3  13 0.005                  ! pbo2  p_bo1   2       Sigma bond order
+##3  3  14 0.005                  ! ovcorr        p_bo2   2       Sigma bond order
+#3  3  15 0.0050   n/A n/A       ! n.u. delta’_i        3a      Uncorrected BO overcoordination
+#3  3  16 0.0050   n/A n/A       ! n.u. p_ij^xel1       27      e ReaxFF param; for adjusting number of electrons available to host atom
+
+# Off-diagonal
+
+#4  1  1  0.005   0.1000  1.0000        	! vdW dissociation energy
+#4  1  2  0.005   1.6000  2.5000         	! vdW radius
+#4  1  3  0.005   2.0000 20.0000            	! vdW parameter
+#4  1  4  0.005	  1.3000  3.0000		! sigma bond covalent radius #smaller than 4-14-2
+#4  1  5  0.005                  		! pi bond
+
+# Angular
+
+#5  1  1  0.005   0.0001 120.0000                ! 180-(equilibrium angle), Theta00, O-Al-N
+#5  1  2  0.005   0.0001 50.0000                ! 1st force constant, p(val1)
+#5  1  3  0.005   0.0001 15.0000                ! 2nd force constant, p(val2) #3.0 max
+#5  1  5  0.005   0.0001  7.5000                ! p(val7) #2.0 max
+#5  1  7  0.005   0.0001  7.5000                ! p(val4)
+#5  2  1  0.005   0.0001 120.0000		! 180-(equilibrium angle), Theta00, O-Al-N
+#5  2  2  0.005   0.0001 50.0000		! 1st force constant, p(val1)
+#5  2  3  0.005   0.0001 15.0000		! 2nd force constant, p(val2) #3.0 max
+#5  2  5  0.005   0.0001  7.5000		! p(val7) #2.0 max
+#5  2  7  0.005   0.0001  7.5000		! p(val4)
+#5  3  1  0.005   0.0001 120.0000		! 180-(equilibrium angle), Theta00, O-Al-N
+#5  3  2  0.005   0.0001 50.0000 		! 1st force constant, p(val1)
+#5  3  3  0.005   0.0001 15.0000		! 2nd force constant, p(val2) #3.0 max
+#5  3  5  0.005   0.0001  7.5000		! p(val7) #2.0 max
+#5  3  7  0.005   0.0001  7.5000		! p(val4)
+#5  4  1  0.005   0.0001 120.0000		! 180-(equilibrium angle), Theta00, O-Al-N
+#5  4  2  0.005   0.0001 50.0000		! 1st force constant, p(val1)
+#5  4  3  0.005   0.0001 15.0000		! 2nd force constant, p(val2) #3.0 max
+#5  4  5  0.005   0.0001  7.5000		! p(val7) #2.0 max
+#5  4  7  0.005   0.0001  7.5000		! p(val4)
+#5  5  1  0.005   0.0001 120.0000		! 180-(equilibrium angle), Theta00, O-Al-N
+#5  5  2  0.005   0.0001 50.0000		! 1st force constant, p(val1)
+#5  5  3  0.005   0.0001 15.0000 		! 2nd force constant, p(val2) #3.0 max
+#5  5  5  0.005   0.0001  7.5000		! p(val7) #2.0 max
+#5  5  7  0.005   0.0001  7.5000		! p(val4)
+#5  6  1  0.005   0.0001 120.0000         	! 180-(equilibrium angle), Theta00, O-Al-N
+#5  6  2  0.005   0.0001 50.0000          	! 1st force constant, p(val1)
+#5  6  3  0.005   0.0001 15.0000         	! 2nd force constant, p(val2) #3.0 max
+#5  6  5  0.005   0.0001  7.5000         	! p(val7) #2.0 max
+#5  6  7  0.005   0.0001  7.5000             	! p(val4)
+
+# Dihedral 
+
+#6  1  2  0.0200 0.1 3.0
+#6  1  3  0.0200 0.1 3.0
+#6  1  4  1.0000 -10 0.0
+#6  2  2  0.0200 0.1 3.0
+#6  2  3  0.0200 0.1 3.0
+#6  2  4  1.0000 -10 0.0
+
+

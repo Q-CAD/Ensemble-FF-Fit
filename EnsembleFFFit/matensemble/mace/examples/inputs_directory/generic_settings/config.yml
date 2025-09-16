@@ -1,0 +1,18 @@
+energy_key: "energy"
+forces_key: "forces"
+stress_key: "stress"
+device: cuda
+batch_size: 10
+max_num_epochs: 100
+num_samples_pt: 300
+swa: True
+model: "MACE"
+stress_weight: 1.0
+forces_weight: 10.0
+energy_weight: 1.0
+E0s: 
+  83: -1.32503832
+  34: -0.77605851
+multiheads_finetuning: False
+valid_fraction: 0.05
+enable_cueq: True

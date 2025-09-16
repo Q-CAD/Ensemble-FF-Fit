@@ -128,7 +128,7 @@ class MatEnsembleJob(ABC):
 
         return reordered_combos_both, task_dirs 
 
-    def batch_by_parent(self, tasks, run_paths, labels, label, parent_levels=1):
+    def batch_by_parent(self, tasks, run_paths, labels, parent_levels=1):
         """
         Given tasks = [(ffield1, struct_path1), (ffield2, struct_path2), …],
         group them by the parent directory of each run_path defined by parent_levels.
@@ -145,7 +145,6 @@ class MatEnsembleJob(ABC):
                 p = p.parent
             return p
 
-        index = labels.index(label)
         groups = defaultdict(lambda: {label: [] for label in labels + ['run_path']})
 
         for i, run_path in enumerate(run_paths):
@@ -165,6 +164,25 @@ class MatEnsembleJob(ABC):
             run_paths.append(parent)
 
         return batched_tasks, run_paths
+
+    def dict_to_argv(self, d, bool_arg=True):
+        """
+        Turn a dict of {option_name: value} into a flat list of CLI args:
+          {"foo": "bar", "baz": 1, "flag": True}
+        → ["--foo", "bar", "--baz", "1", "--flag"]
+        Boolean True→ include the flag, False→ omit it.
+        """
+        argv = []
+        for k, v in d.items():
+            flag = f"--{k}"
+            if isinstance(v, bool):
+                if v and bool_arg: # Pass argument as bool
+                    argv.extend([flag, str(v)])
+                else:
+                    argv.append(flag) # Treat as single flag
+            else:
+                argv.extend([flag, str(v)])
+        return argv
 
     def get_python(self):
         try:
@@ -248,25 +266,6 @@ class JaxReaxFFMatEnsemble(MatEnsembleJob):
     def get_tasks(self, paths, tasks_per_path):
         return [tasks_per_path for path in paths]
 
-    def dict_to_argv(self, d, bool_arg=True):
-        """
-        Turn a dict of {option_name: value} into a flat list of CLI args:
-          {"foo": "bar", "baz": 1, "flag": True}
-        → ["--foo", "bar", "--baz", "1", "--flag"]
-        Boolean True→ include the flag, False→ omit it.
-        """
-        argv = []
-        for k, v in d.items():
-            flag = f"--{k}"
-            if isinstance(v, bool):
-                if v and bool_arg: # Pass argument as bool
-                    argv.extend([flag, str(v)])
-                else:
-                    argv.append(flag) # Treat as single flag
-            else:
-                argv.extend([flag, str(v)])
-        return argv
-
     def dict_to_str_list(self, d, labels, task_arg_list, ignore_list):
         task_arg_strs = []
         args_dct = {k: v for k, v in vars(d).items() if k not in ignore_list}
@@ -277,6 +276,44 @@ class JaxReaxFFMatEnsemble(MatEnsembleJob):
             task_arg_str = self.dict_to_argv(task_arg_dct)
             task_arg_strs.append(task_arg_str)
         
+        return task_arg_strs
+
+    def generic_task_command(self):
+        pass
+
+class MACEMatEnsemble(MatEnsembleJob):
+    def __init__(self, run_directory, inputs_directory, **kwargs):
+        super().__init__(run_directory, inputs_directory, **kwargs)
+
+    def sorting_function(self, path):
+        return str.lower
+
+    def get_tasks(self, paths):
+        return [1 for path in paths]
+
+    def construct_tasks(self, task_arg_list, run_paths, fits_per_runpath, upper=10000):
+        new_task_arg_list = []
+        new_run_paths = []
+        for i, run_path in enumerate(run_paths):
+            seeds = np.random.choice(np.arange(0, upper), size=fits_per_runpath, replace=False)
+            for j, seed in enumerate(seeds):
+                new_task_arg_list.append(task_arg_list[i]) # Same inputs here
+                new_run_path = os.path.join(run_path, str(seed))
+                new_run_paths.append(new_run_path)
+
+        return new_task_arg_list, new_run_paths
+
+    def to_str_list(self, labels, task_arg_list, run_paths):
+        # Create the base argument string for MACE force field fitting
+        task_arg_strs = []
+        for i, run_path in enumerate(run_paths):
+            seed = Path(run_path).name
+            task_arg_dct = {'name': 'MACE_MatEnsemble', 'seed': seed}
+            for j, label in enumerate(labels):
+                task_arg_dct[label] = task_arg_list[i][j]
+            task_arg_str = self.dict_to_argv(task_arg_dct)
+            task_arg_strs.append(task_arg_str)
+
         return task_arg_strs
 
     def generic_task_command(self):

@@ -152,7 +152,7 @@ def main():
 
 def run_reaxff(args):
   # Generate the options dictionary for MatEnsembleJob object initilization
-  matensemble_arguments = ['run_directory', 'inputs_directory', 'check_files', 'jaxreaxff_task', 
+  matensemble_arguments = ['run_directory', 'inputs_directory', 'check_files', 
                            'cpus_per_task', 'gpus_per_task', 'fits_per_runpath', 'dry_run']
 
   options = {'init_FF': args.init_FF,

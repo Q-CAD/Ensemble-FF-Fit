@@ -21,6 +21,7 @@ def main():
     parser.add_argument("--target_name", "-tn", help="Name of target file", default='ffield')
     parser.add_argument("--pattern", "-p", help="Patterns; see file", default='^new_FF_([\d_]+)$')
     parser.add_argument("--in_lammps", "-in", help="Exclusively used by dump files; path to in.lammps file for atom mapping") 
+    parser.add_argument("--atom_style", "-at", help="LAMMPs structure file atom style", default='charge', choices=['full', 'charge', 'atomic']) 
     # JaxReaxFF example: '^new_FF_([\d_]+)$'
     # LAMMPs example: '^dump_(\d+)\.dump$'
     
@@ -43,13 +44,13 @@ def get_atom_mapping_from_control(path):
 
     return mapping
 
-def get_LammpsData_from_dump(path, mapping):
+def get_LammpsData_from_dump(path, mapping, atom_style):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         atoms = read(path, format='lammps-dump-text')
         structure = AseAtomsAdaptor().get_structure(atoms)
         structure = structure.replace_species(mapping)
-        ld = LammpsData.from_structure(structure)
+        ld = LammpsData.from_structure(structure, atom_style=atom_style)
         return ld
 
 def copy_and_rename_files(args):
@@ -88,7 +89,7 @@ def copy_and_rename_files(args):
                     destination_file = os.path.join(destination_subdir, args.target_name)
                     if 'dump' in source_file:
                         mapping = get_atom_mapping_from_control(args.in_lammps)
-                        ld = get_LammpsData_from_dump(source_file, mapping)
+                        ld = get_LammpsData_from_dump(source_file, mapping, args.atom_style)
                         try:
                             ld.write_file(filename=destination_file)
                             print(f"Converted '{source_file}' dump file to lammps file at '{destination_file}'")

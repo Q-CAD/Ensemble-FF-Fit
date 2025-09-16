@@ -1,1 +1,0 @@
-Note: Jax-ReaxFF is no longer supported, and you will therefore need to use a static build with this code. 

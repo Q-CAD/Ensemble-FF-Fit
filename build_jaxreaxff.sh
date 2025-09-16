@@ -28,7 +28,7 @@ source "${CONDA_BASE}/etc/profile.d/conda.sh"
 
 # Create environment with desired conda packages (non-interactive)
 echo "Creating conda env (python=3.13, jax[cuda12]==0.4.35, pymatgen, ase, mpi4py, scikit-learn, seaborn)..."
-conda create --yes --prefix "$ENV_PATH" python=3.13 "jax[cuda12]==0.4.35"
+conda create --yes --prefix "$ENV_PATH" python=3.13 numpy=2.1.3 "jax[cuda12]==0.4.35"
 conda install --yes --prefix "$ENV_PATH" pymatgen pymatgen-analysis-defects mp-api ase mpi4py scikit-learn seaborn frozendict -c conda-forge
 
 # Install ovito into the same prefix (uses a different channel)

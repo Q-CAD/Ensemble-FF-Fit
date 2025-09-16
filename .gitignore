@@ -1,6 +1,7 @@
 # Enviroment build scripts
 jaxreaxff_build/
 base_build/
+lammps_build/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
