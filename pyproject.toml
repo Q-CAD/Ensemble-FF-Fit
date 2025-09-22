@@ -29,7 +29,10 @@ jaxreaxff_matensemble = "EnsembleFFFit.matensemble.reaxff.jaxreaxff_matensemble_
 mace_matensemble = "EnsembleFFFit.matensemble.mace.mace_matensemble_cli:main"
 lammps_matensemble = "EnsembleFFFit.matensemble.lammps.lammps_matensemble_cli:main"
 
+cn_checker = "EnsembleFFFit.analysis.cn_checker_cli:main"
+
 copy_by_pattern = "EnsembleFFFit.utils.copy_by_pattern_cli:main"
+create_lammps_models = "EnsembleFFFit.utils.create_lammps_models_cli:main"
 
 [tool.setuptools]
 packages = ["EnsembleFFFit"]  # Ensure this matches your package directory name

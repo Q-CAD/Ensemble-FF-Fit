@@ -21,9 +21,12 @@ def main():
     parser.add_argument("--target_name", "-tn", help="Name of target file", default='ffield')
     parser.add_argument("--pattern", "-p", help="Patterns; see file", default='^new_FF_([\d_]+)$')
     parser.add_argument("--in_lammps", "-in", help="Exclusively used by dump files; path to in.lammps file for atom mapping") 
-    parser.add_argument("--atom_style", "-at", help="LAMMPs structure file atom style", default='charge', choices=['full', 'charge', 'atomic']) 
+    parser.add_argument("--atom_style", "-at", help="LAMMPs structure file atom style, e.g., '^new_FF_([\d_]+)$', '^dump_(\d+)\.dump$', '^MACE_MatEnsemble_stage([^.]+)\\.model$', '^MACE_([^._-]+)\\.model$'", 
+                        default='charge', choices=['full', 'charge', 'atomic']) 
+    
     # JaxReaxFF example: '^new_FF_([\d_]+)$'
     # LAMMPs example: '^dump_(\d+)\.dump$'
+    # MACE example: '^MACE_MatEnsemble_stage([^.]+)\\.model$' or '^MACE_([^._-]+)\\.model$'
     
     args = parser.parse_args()
     copy_and_rename_files(args)

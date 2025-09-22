@@ -308,7 +308,8 @@ class MACEMatEnsemble(MatEnsembleJob):
         task_arg_strs = []
         for i, run_path in enumerate(run_paths):
             seed = Path(run_path).name
-            task_arg_dct = {'name': 'MACE_MatEnsemble', 'seed': seed}
+            name = f'MACE_{seed}'
+            task_arg_dct = {'name': name, 'seed': seed}
             for j, label in enumerate(labels):
                 task_arg_dct[label] = task_arg_list[i][j]
             task_arg_str = self.dict_to_argv(task_arg_dct)
