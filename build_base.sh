@@ -31,6 +31,7 @@ conda create --yes --prefix "$ENV_PATH" \
       python=3.13 \
       pymatgen \
       pymatgen-analysis-defects \
+      matminer \
       mp-api \
       ase \
       scikit-learn \

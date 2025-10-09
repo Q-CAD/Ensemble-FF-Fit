@@ -67,10 +67,22 @@ fi
 # Install Ensemble-FF-Fit
 "$ENV_PY" -m pip install --no-cache-dir -e . --no-deps
 
+# Remove mace-torch to avoid clashes with mace-freeze branch
+"$ENV_PY" -m pip uninstall -y mace-torch
+
 # Make a build dir for cloning and installing repos
 BUILD_DIR="$(pwd)/lammps_build"
+[ -d "$BUILD_DIR" ] && rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
+
+# Build mace-torch from the mace-freeze branch 
+REPO0="mace-freeze"
+[ -d "$REPO0" ] && rm -rf "$REPO0"
+git clone -b mace-freeze https://github.com/7radians/mace-freeze.git # "$REPO0"
+cd "$REPO0"
+"$ENV_PY" -m pip install --no-cache-dir .
+cd ..
 
 # Clone and install MatEnsemble (editable, skip deps to avoid changing env)
 REPO1="MatEnsemble"

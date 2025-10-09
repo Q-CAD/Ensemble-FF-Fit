@@ -54,7 +54,7 @@ class MatEnsembleJob(ABC):
         # sanity
         for n in names:
             if not paths[n]:
-                raise FileNotFoundError(f"{n!r} not found under {root!r}")
+                raise FileNotFoundError(f"{n} not found under {root}")
 
         # choose anchor = the key with max occurrences
         anchor = max(names, key=lambda n: len(paths[n]))
@@ -155,15 +155,15 @@ class MatEnsembleJob(ABC):
 
         # Build the final output in arbitrary parent‐directory order:
         batched_tasks = []
-        run_paths = []
+        new_run_paths = []
         for parent, contents in groups.items():
             use_batch = []
-            for label in labels:
+            for label in labels + ['run_path']: # Add run path to arguments here
                 use_batch.append(contents[label])
             batched_tasks.append(use_batch)
-            run_paths.append(parent)
+            new_run_paths.append(parent)
 
-        return batched_tasks, run_paths
+        return batched_tasks, new_run_paths, run_paths
 
     def dict_to_argv(self, d, bool_arg=True):
         """
@@ -198,7 +198,8 @@ class MatEnsembleJob(ABC):
 
     def run(self, dry_run, task_command, run_tasks, 
                   cpus_per_task, gpus_per_task, 
-                  task_arg_list, task_dir_list, 
+                  task_arg_list, task_dir_list,
+                  make_paths_list, 
                   write_restart_freq=1000000, buffer_time=1):
 
         if dry_run:
@@ -217,9 +218,9 @@ class MatEnsembleJob(ABC):
                                   gpus_per_task=gpus_per_task,
                                   write_restart_freq=1000000)
             
-            # Make the task directories if they do not exist
-            for task_dir in task_dir_list:
-                os.makedirs(task_dir, exist_ok=True)
+            # Make directories for outputs if they do not exist
+            for make_path in make_paths_list:
+                os.makedirs(make_path, exist_ok=True)
 
             master.poolexecutor(task_arg_list=task_arg_list,
                             buffer_time=1,
@@ -238,8 +239,11 @@ class LammpsMatEnsemble(MatEnsembleJob):
             try: # For lammps-data format
                 return LammpsData.from_file(lmp_file_path, atom_style=self.options['atom_style']).structure
             except KeyError: # For lammps-dump-text format
-                aaa = AseAtomsAdaptor()
-                return aaa.get_structure(read(lmp_file_path, format='lammps-dump-text'))
+                try:
+                    aaa = AseAtomsAdaptor()
+                    return aaa.get_structure(read(lmp_file_path, format='lammps-dump-text'))
+                except StopIteration: # For other structure formats
+                    return aaa.get_structure(read(lmp_file_path))
 
     def sorting_function(self, path):
         ''' Sort by structure length '''

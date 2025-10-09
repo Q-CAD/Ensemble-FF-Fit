@@ -19,9 +19,10 @@ def main():
                          type=int, default=3)
     parser.add_argument("--target_directory", "-td", help="Path to the target directory", default='ffields')
     parser.add_argument("--target_name", "-tn", help="Name of target file", default='ffield')
-    parser.add_argument("--pattern", "-p", help="Patterns; see file", default='^new_FF_([\d_]+)$')
+    parser.add_argument("--pattern", "-p", help="Patterns, e.g., '^new_FF_([\d_]+)$', '^dump_(\d+)\.dump$', '^MACE_MatEnsemble_stage([^.]+)\\.model$', '^MACE_([^._-]+)\\.model$'", 
+                        default='^new_FF_([\d_]+)$')
     parser.add_argument("--in_lammps", "-in", help="Exclusively used by dump files; path to in.lammps file for atom mapping") 
-    parser.add_argument("--atom_style", "-at", help="LAMMPs structure file atom style, e.g., '^new_FF_([\d_]+)$', '^dump_(\d+)\.dump$', '^MACE_MatEnsemble_stage([^.]+)\\.model$', '^MACE_([^._-]+)\\.model$'", 
+    parser.add_argument("--atom_style", "-at", help="LAMMPs structure file atom style, e.g., 'full', 'charge', 'atomic'", 
                         default='charge', choices=['full', 'charge', 'atomic']) 
     
     # JaxReaxFF example: '^new_FF_([\d_]+)$'

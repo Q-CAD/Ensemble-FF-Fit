@@ -54,10 +54,11 @@ def get_forces(dump_path, units):
         fzs = [uc.convert(fz, 'kcal/mol', 'eV/atom', 'energy') for fz in fzs]
     return fxs, fys, fzs
 
-def parse_single_points(path_to_images, 
-                            log_index = 0,  
-                            energy_label='PotEng', 
-                            units='metal'):
+def parse_single_points(path_to_images,
+                            log_index = 0,
+                            energy_label='PotEng',
+                            units='metal',
+                        ffield_label=(-5, -3)):
     data = {}
     for root, _, _ in os.walk(path_to_images):
         log_paths = glob.glob(os.path.join(root, '*.lammps'))
@@ -67,18 +68,18 @@ def parse_single_points(path_to_images,
             except:
                 energy = np.nan
             p = Path(log_path)
-            image = int(re.findall(r'\d+', p.name)[0])
+            image = int(re.findall(r'\d+', p.parent.name)[0])
             try:
-                dump_path = glob.glob(os.path.join(root, f"*{image}*.dump"))[0]
+                dump_path = glob.glob(os.path.join(root, "*.dump"))[0]
                 fxs, fys, fzs = get_forces(dump_path, units=units)
-            except:
+            except Exception:
                 fxs, fys, fzs = [], [], []
 
-            md = p.parent.name
-            ffield = p.parent.parent.name
-            nested_set(data, [ffield, md, image], {'energy': energy, 
+            md = p.parent.parent.name
+            ffield_parts = root.split("/")
+            ffield = "_".join(ffield_parts[ffield_label[0]:ffield_label[1]])
+            nested_set(data, [ffield, md, image], {'energy': energy,
                                                    'fx': fxs, 'fy': fys, 'fz': fzs})
-            
     return data
 
 def parse_VASP_single_points(path_to_runs):
@@ -102,6 +103,12 @@ def parse_VASP_single_points(path_to_runs):
     return data
 
 def comparison_dictionary(data_dictionary, ref_key='DFT', rel_image=None):
+    def safe_subtract(a, b):
+        try:
+            return np.subtract(a, b)
+        except Exception:
+            return None
+
     dev_data = {}
     for ffield in list(data_dictionary.keys()):
         for md in list(data_dictionary[ffield].keys()):
@@ -111,23 +118,24 @@ def comparison_dictionary(data_dictionary, ref_key='DFT', rel_image=None):
                 energy = data_dictionary[ffield][md][image]['energy']
                 ref_energy = data_dictionary[ref_key][md][image]['energy']
                 if rel_image is not None:
-                    use_energy = np.subtract(energy, data_dictionary[ffield][md][rel_image]['energy'])
-                    use_ref = np.subtract(ref_energy, data_dictionary[ref_key][md][rel_image]['energy']) 
+                    use_energy = safe_subtract(energy, data_dictionary[ffield][md][rel_image]['energy'])
+                    use_ref = safe_subtract(ref_energy, data_dictionary[ref_key][md][rel_image]['energy']) 
                 else:
                     use_energy = energy
                     use_ref = ref_energy
-                energy_difference = np.abs(np.subtract(use_ref, use_energy))
+                energy_difference = safe_subtract(use_ref, use_energy)
+                energy_difference = np.abs(energy_difference) if energy_difference is not None else None
 
                 # Get force differences next
                 ref_fx = data_dictionary[ref_key][md][image]['fx']
-                fx_difference = np.subtract(ref_fx, data_dictionary[ffield][md][image]['fx'])
-                fx_rmsd = np.sqrt(np.mean(fx_difference ** 2))
+                fx_difference = safe_subtract(ref_fx, data_dictionary[ffield][md][image]['fx'])
+                fx_rmsd = np.sqrt(np.mean(fx_difference ** 2)) if fx_difference is not None else None
                 ref_fy = data_dictionary[ref_key][md][image]['fy']
-                fy_difference = np.subtract(ref_fy, data_dictionary[ffield][md][image]['fy'])
-                fy_rmsd = np.sqrt(np.mean(fy_difference ** 2))
+                fy_difference = safe_subtract(ref_fy, data_dictionary[ffield][md][image]['fy'])
+                fy_rmsd = np.sqrt(np.mean(fy_difference ** 2)) if fy_difference is not None else None
                 ref_fz = data_dictionary[ref_key][md][image]['fz']
-                fz_difference = np.subtract(ref_fz, data_dictionary[ffield][md][image]['fz'])
-                fz_rmsd = np.sqrt(np.mean(fz_difference ** 2))
+                fz_difference = safe_subtract(ref_fz, data_dictionary[ffield][md][image]['fz'])
+                fz_rmsd = np.sqrt(np.mean(fz_difference ** 2)) if fz_difference is not None else None
 
                 # Get the dictionary
                 nested_set(dev_data, [ffield, md, image], {'energy': energy_difference,

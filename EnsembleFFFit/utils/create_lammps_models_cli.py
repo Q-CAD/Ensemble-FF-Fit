@@ -86,6 +86,7 @@ def main():
     for root, _, _ in os.walk(model_path):
         check_model_path = os.path.join(root, check_name)
         if os.path.exists(check_model_path):
+            print(f"Creating {args.format} model for {check_model_path}")
             model = torch.load(
             check_model_path,
             map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
