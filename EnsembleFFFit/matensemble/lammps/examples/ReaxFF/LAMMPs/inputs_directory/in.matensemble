@@ -1,0 +1,68 @@
+# VARIABLES
+variable        T_room                  equal 300
+variable        T_melt          	equal 4500
+
+# run lengths
+variable room_steps     equal 15000
+variable melt_steps	equal 150000
+variable anneal_steps   equal 150000
+
+units real
+dimension 3
+boundary p p p
+atom_style charge
+box tilt large
+processors * * *
+newton on
+neighbor 3.0 bin
+neigh_modify every 1 delay 0 check yes
+
+read_data ${structure}
+
+pair_style reaxff ${control_filename} safezone 3.0 mincap 500
+pair_coeff * * ${ff_filename} ${elements}
+
+fix 1 all qeq/reax 1 0.0 10.0 1.0e-6 reaxff
+
+thermo 		1000
+thermo_style 	custom step temp pe epair etotal press pxx pyy pzz lx ly lz vol density
+
+dump            d1 all custom 1000 ${dump_file} id type x y z fx fy fz
+dump_modify     d1 element ${elements}
+
+timestep        0.5
+
+#------------------- ENERGY_MINIMIZATION ---------------------
+# stage 1: fast, loose (get rid of large forces)
+min_style fire
+minimize 1.0e-2 1.0e-2 500 5000
+
+# optional stage 2: tighter refine (only if needed)
+min_style cg
+minimize 1.0e-6 1.0e-4 2000 10000
+write_data      Min.data
+
+#------------------- NPT AT ${T_room} ------------------------
+fix             relax all npt temp ${T_room} ${T_room} 100 x 0 0 100 y 0 0 100
+run             ${room_steps}
+unfix           relax
+write_restart   npt_relax.res
+write_data      data.npt_relax
+
+#------------------- NVT MELT AT ${T_melt} -------------------
+fix 		melt all langevin ${T_room} ${T_melt} 50 12345
+fix 		ensemble all nve
+run 		${melt_steps}
+unfix 		melt
+unfix 		ensemble
+write_restart   nvt_melt.res
+write_data      data.nvt_melt
+
+#------------------- NVT ANNEAL AT ${T_anneal} ---------------
+fix 		heat all langevin ${T_melt} ${T_melt} 50 12345
+fix 		ensemble all nve
+run  		${anneal_steps}
+unfix 		heat
+unfix 		ensemble
+write_restart   nvt_anneal.res
+write_data      data.nvt_anneal

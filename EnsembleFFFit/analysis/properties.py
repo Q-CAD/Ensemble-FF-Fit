@@ -6,7 +6,11 @@ from parse2fit.tools.unitconverter import UnitConverter
 from pymatgen.io.lammps.outputs import parse_lammps_dumps
 from pymatgen.io.lammps.outputs import parse_lammps_log
 from pymatgen.io.vasp.outputs import Vasprun
+from pymatgen.io.ase import AseAtomsAdaptor
+from ase.io import read
+from EnsembleFFFit.utils.copy_by_pattern_cli import get_atom_mapping_from_control
 import numpy as np
+from copy import deepcopy
 
 def nested_set(dct, keys, value):
     """
@@ -23,18 +27,37 @@ def nested_set(dct, keys, value):
         # Recurse into the next level
         nested_set(dct[keys[0]], keys[1:], value)
 
-def get_energy(log_path, log_index, energy_label, units):
+def get_energy(log_path, image, energy_label, units):
     log = parse_lammps_log(log_path)
-    try:
-        energy = float(log[log_index][energy_label][1])  # Error message written
-    except:
-        energy = float(log[log_index][energy_label][0])  # No error message written
+    energy = None
+    for l in log: 
+        try:
+            energy = float(l.loc[l["Step"] == image, energy_label].iloc[0])  # No error message written
+        except IndexError:
+            try:
+                energy = float(l.loc[l["Step"] == str(image), energy_label].iloc[0])  # Error message written
+            except:
+                continue
+    
     uc = UnitConverter()
-    if units == 'metal': # Compatible with VASP DFT
-        pass
-    elif units == 'real': # In kcal/mol
-        energy = uc.convert(energy, 'kcal/mol', 'eV/atom', 'energy')
-    return energy 
+    if energy:
+        if units == 'metal': # Compatible with VASP DFT
+            pass
+        elif units == 'real': # In kcal/mol
+            energy = uc.convert(energy, 'kcal/mol', 'eV/atom', 'energy')
+    return energy
+
+def get_atoms(dump_path, mapping):
+    try:
+        atoms_we = read(dump_path, index=-1, format='lammps-dump-text')
+    except StopIteration:
+        print(f'Cannot parse {dump_path}')
+        return None
+    new_symbols = [mapping[sym] for sym in atoms_we.get_chemical_symbols()]
+    atoms_orig = deepcopy(atoms_we)
+    atoms_we.set_chemical_symbols(new_symbols)
+    atoms_we.arrays['forces'] = atoms_orig.get_forces()
+    return atoms_we
 
 def get_forces(dump_path, units):
     final_image = next(parse_lammps_dumps(dump_path))
@@ -55,30 +78,44 @@ def get_forces(dump_path, units):
     return fxs, fys, fzs
 
 def parse_single_points(path_to_images,
-                            log_index = 0,
+                            dump_index = 0,
                             energy_label='PotEng',
                             units='metal',
                         ffield_label=(-5, -3)):
     data = {}
-    for root, _, _ in os.walk(path_to_images):
+    for root, _, _ in os.walk(os.path.abspath(path_to_images)):
         log_paths = glob.glob(os.path.join(root, '*.lammps'))
         for log_path in log_paths:
+            
+            p = Path(log_path)
             try:
-                energy = get_energy(log_path, log_index, energy_label, units=units)
+                element_mapping = get_atom_mapping_from_control(p)
+            except ValueError:
+                print(f'Cannot parse elements from {p}')
+                continue
+            dump_paths = glob.glob(os.path.join(root, "*.dump"))
+            sorted_dump_path_names = sorted([Path(p).name for p in dump_paths], key=lambda x: int(x.split('_')[1].split('.')[0]))
+            index_path = os.path.join(root, sorted_dump_path_names[dump_index])
+            image = int(re.findall(r'\d+', sorted_dump_path_names[dump_index])[0])
+            atoms = get_atoms(index_path, element_mapping)
+            
+            try:
+                energy = get_energy(log_path, image, energy_label, units=units)
             except:
                 energy = np.nan
-            p = Path(log_path)
-            image = int(re.findall(r'\d+', p.parent.name)[0])
+            
             try:
-                dump_path = glob.glob(os.path.join(root, "*.dump"))[0]
-                fxs, fys, fzs = get_forces(dump_path, units=units)
+                fxs, fys, fzs = get_forces(os.path.join(root, index_path), units=units)
             except Exception:
                 fxs, fys, fzs = [], [], []
-
-            md = p.parent.parent.name
-            ffield_parts = root.split("/")
-            ffield = "_".join(ffield_parts[ffield_label[0]:ffield_label[1]])
-            nested_set(data, [ffield, md, image], {'energy': energy,
+            
+            if atoms:
+                atoms.info['energy'] = energy
+                md = p.parent.parent.name
+                original_image = int(re.findall(r'\d+', p.parent.name)[0])
+                ffield_parts = root.split("/")
+                ffield = "_".join(ffield_parts[ffield_label[0]:ffield_label[1]])
+                nested_set(data, [ffield, md, original_image], {'energy': energy, 'atoms': atoms,
                                                    'fx': fxs, 'fy': fys, 'fz': fzs})
     return data
 
@@ -98,7 +135,7 @@ def parse_VASP_single_points(path_to_runs):
             image = int(p.parent.name) #int(re.findall(r'\d+', p.name)[0])
             md = p.parent.parent.name
             ffield = p.parent.parent.parent.name
-            nested_set(data, [ffield, md, image], {'energy': energy,
+            nested_set(data, [ffield, md, image], {'energy': energy, 'structure': v.final_structure, 
                                                    'fx': fxs, 'fy': fys, 'fz': fzs})
     return data
 
@@ -167,4 +204,18 @@ def performance_rank(deviation_data, md, energy_weight=1, force_weight=1):
     for key, inner in sorted_items:
         print(f"{key}: energy = {inner['energy']}, force = {inner['force']}, score = {inner['score']}")
     return md_dictionary, sorted_items
+
+def write_poscars(data_dictionary, to_path, filename='POSCAR'):
+    aaa = AseAtomsAdaptor()
+    for top_level, tl_value in data_dictionary.items():
+        for mid_level, ml_value in tl_value.items():
+            for bottom_level, bl_value in ml_value.items():
+                atoms = bl_value['atoms']
+                structure = aaa.get_structure(atoms).sort() 
+                dir_path = os.path.join(str(to_path), str(top_level), str(mid_level), str(bottom_level))
+                os.makedirs(dir_path, exist_ok=True)
+                structure.to(os.path.join(dir_path, 'POSCAR'))
+
+    return 
+
 

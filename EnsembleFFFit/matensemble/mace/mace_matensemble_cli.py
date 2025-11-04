@@ -68,7 +68,8 @@ def run_mace(args):
                            cpus_per_task=args.cpus_per_task,
                            gpus_per_task=args.gpus_per_task,
                            task_arg_list=task_arg_strs,
-                           task_dir_list=run_paths)
+                           task_dir_list=run_paths, 
+                           make_paths_list=run_paths)
 
 if __name__ == '__main__':
   main()

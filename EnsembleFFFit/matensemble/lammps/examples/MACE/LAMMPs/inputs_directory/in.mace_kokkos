@@ -1,0 +1,39 @@
+# --- header / basics ---
+units         metal
+atom_style    atomic
+atom_modify   map yes
+newton        on
+processors    * * *
+dimension 3
+boundary p p p
+
+read_data ${structure}
+
+# --- neighbors ---
+neighbor 2.0 bin
+neigh_modify every 1 delay 0 check yes
+
+# --- potential (adjust for your pair style) ---
+pair_style mliap unified ${ff_filename} 0
+pair_coeff * * ${elements}
+
+# --- output / dumps ---
+dump       d1 all custom 1000 ${dump_file} id type x y z fx fy fz
+dump_modify d1 element ${elements}
+
+thermo          100
+thermo_style    custom step temp pe epair etotal press pxx pyy pzz lx ly lz vol density
+
+# ------------------- STAGE 1: quick pre-relax to remove bad overlaps ----------------
+# FIRE is good for large changes; use loose tolerances and modest maxiter
+min_style cg/kk
+minimize 1.0e-2 1.0e-2 500 5000
+
+# ------------------- STAGE 2: variable-cell + refine ----------------
+# Allow the box to change — use iso / aniso / x y z depending on needs
+# iso => isotropic volume change; aniso => full 3D cell shape relax
+fix 2 all box/relax iso 0.0 vmax 0.001
+min_style cg/kk
+minimize 1.0e-6 1.0e-4 2000 10000
+write_data Min.data
+unfix 2

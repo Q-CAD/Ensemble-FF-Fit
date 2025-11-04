@@ -35,15 +35,16 @@ def main():
 
 def get_atom_mapping_from_control(path):
     lif = LammpsInputFile.from_file(path)
-    pair_coeff_list = [line for line in lif.as_dict()['stages'][0]['commands'] if 'pair_coeff' in line][0]
+    pair_coeff_lists = [line for line in lif.as_dict()['stages'][0]['commands'] if 'pair_coeff' in line]
     
     elements = []
-    for split in pair_coeff_list[-1].split():
-        try:
-            el = Element(split)
-            elements.append(str(el))
-        except:
-            pass 
+    for pair_coeff_list in pair_coeff_lists:
+        for split in pair_coeff_list[-1].split():
+            try:
+                el = Element(split)
+                elements.append(str(el))
+            except:
+                pass 
     mapping = {str(Element.from_Z(i+1)): str(elements[i]) for i in range(len(elements))}
 
     return mapping

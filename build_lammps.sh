@@ -40,19 +40,22 @@ ENV_PY="$ENV_PATH/bin/python"
 ENV_PIP="$ENV_PATH/bin/pip"
 
 # Activate the environment
-"$ENV_PY" -m pip install \
+"$ENV_PY" -m pip cache purge
+"$ENV_PY" -m pip install --no-cache-dir --force-reinstall \
   --upgrade pip setuptools wheel \
   --extra-index-url https://download.pytorch.org/whl/cu124 \
   torch==2.5.0+cu124 \
   numpy==2.0.0 \
-  cuequivariance \
-  cuequivariance-torch \
-  cuequivariance-ops-torch-cu12 \
+  cuequivariance==0.6.0 \
+  cuequivariance-torch==0.6.0 \
+  cuequivariance-ops-torch-cu12==0.3.0 \
   mace-torch "numpy==2.0.0" \
-  cupy-cuda12x \
+  cupy-cuda12x==13.5.1 \
   pymatgen "numpy==2.0.0" \
   ase "numpy==2.0.0" \
   pyarrow
+
+# torch-sim-atomistic "numpy==2.0.0" \
 
 MPICC="cc -shared" pip install --force --no-cache-dir --no-binary=mpi4py mpi4py==4.0.3
 
@@ -67,22 +70,11 @@ fi
 # Install Ensemble-FF-Fit
 "$ENV_PY" -m pip install --no-cache-dir -e . --no-deps
 
-# Remove mace-torch to avoid clashes with mace-freeze branch
-"$ENV_PY" -m pip uninstall -y mace-torch
-
 # Make a build dir for cloning and installing repos
 BUILD_DIR="$(pwd)/lammps_build"
 [ -d "$BUILD_DIR" ] && rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
-
-# Build mace-torch from the mace-freeze branch 
-REPO0="mace-freeze"
-[ -d "$REPO0" ] && rm -rf "$REPO0"
-git clone -b mace-freeze https://github.com/7radians/mace-freeze.git # "$REPO0"
-cd "$REPO0"
-"$ENV_PY" -m pip install --no-cache-dir .
-cd ..
 
 # Clone and install MatEnsemble (editable, skip deps to avoid changing env)
 REPO1="MatEnsemble"

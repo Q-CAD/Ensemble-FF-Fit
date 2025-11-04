@@ -1,5 +1,6 @@
 import ast
 from pymatgen.io.lammps.data import LammpsData
+#from torch_sim.quantities import calc_kinetic_energy, calc_temperature
 
 def parse_list(arg):
     """
@@ -33,3 +34,33 @@ def get_elements(structure_path, styles=['full', 'charge', 'atomic']):
                 elements += ' '
         return elements
     return None
+
+def make_prop_calculators(mapping):
+    """
+    Given a dict of { name: freq }, return the prop_calculators dict
+    where each name is wired up to the correct lambda for MaceModel.
+    Supported names: 'potential_energy', 'kinetic_energy', 'temperature', 'forces'
+    """
+    pc = {}
+    for name, freq in mapping.items():
+        if name == "potential_energy":
+            func = lambda s, m: m(s)["energy"]
+        elif name == "forces":
+            func = lambda s, m: m(s)["forces"].cpu()
+        elif name == "kinetic_energy":
+            func = lambda s, m: calc_kinetic_energy(
+                momenta=s.momenta,
+                masses=s.masses,
+                velocities=None
+            ).unsqueeze(0)
+        elif name == "temperature":
+            func = lambda s, m: calc_temperature(
+                momenta=s.momenta,
+                masses=s.masses,
+                velocities=None,
+            ).unsqueeze(0)
+        else:
+            raise ValueError(f"Unknown prop name: {name!r}")
+        pc[freq] = pc.get(freq, {})
+        pc[freq][name] = func
+    return pc

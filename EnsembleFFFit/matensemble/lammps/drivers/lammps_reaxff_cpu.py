@@ -12,9 +12,9 @@ if __name__ == "__main__":
     output_list   = parse_list(sys.argv[5]) # LAMMPs output write paths
 
     n = len(ff_list)
-    assert all(len(lst) == n for lst in (contr_list, input_list, struct_list, output_list)), "All lists must be same length"
+    assert all(len(lst) == n for lst in (control_list, input_list, struct_list, output_list)), "All lists must be same length"
 
-    lmp = lammps(cmdargs=["-log", "none", "-screen", "os.devnull"])
+    lmp = lammps.lammps(cmdargs=["-log", "none", "-screen", "os.devnull"])
 
     for idx, (ff, ctrl, inp, struct, output) in enumerate(zip(ff_list, control_list, input_list, struct_list, output_list), start=0):
         # 1a) Open a new log file in the output path
@@ -28,7 +28,7 @@ if __name__ == "__main__":
             lmp.command(f"variable ff_filename string {ff}")
         if struct:
             lmp.command(f"variable structure string {struct}")
-        if con:
+        if ctrl:
             lmp.command(f"variable control_filename string {ctrl}")
 
         # 3) Determine the pair coefficient

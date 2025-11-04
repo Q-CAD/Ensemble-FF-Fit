@@ -1,0 +1,7 @@
+cuequivariance==0.6.0
+cuequivariance-torch==0.6.0
+cuequivariance-ops-torch-cu12==0.3.0
+cuequivariance-ops-cu12==0.4.0
+cupy-cuda12x==13.5.1
+torch==2.5.0+cu124
+numpy==2.0.0
