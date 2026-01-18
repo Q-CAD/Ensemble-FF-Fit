@@ -59,6 +59,20 @@ def get_atoms(dump_path, mapping):
     atoms_we.arrays['forces'] = atoms_orig.get_forces()
     return atoms_we
 
+def get_eatom(dump_path, units):
+    final_image = next(parse_lammps_dumps(dump_path))
+    index = final_image.data['id']
+    e_atoms = final_image.data['c_eatom']
+    zipped_list = list(zip(index, e_atoms))
+    sorted_zipped_list = sorted(zipped_list)
+    index, e_atoms = list(zip(*sorted_zipped_list))
+    uc = UnitConverter()
+    if units == 'metal':
+        pass
+    elif units == 'real':
+        e_atoms = [uc.convert(fx, 'kcal/mol', 'eV/atom', 'energy') for e_atom in e_atoms]
+    return e_atoms
+
 def get_forces(dump_path, units):
     final_image = next(parse_lammps_dumps(dump_path))
     index = final_image.data['id']
@@ -103,6 +117,11 @@ def parse_single_points(path_to_images,
                 energy = get_energy(log_path, image, energy_label, units=units)
             except:
                 energy = np.nan
+
+            try:
+                e_atoms = get_eatom(os.path.join(root, index_path), units=units)
+            except:
+                e_atoms = []
             
             try:
                 fxs, fys, fzs = get_forces(os.path.join(root, index_path), units=units)
@@ -115,7 +134,7 @@ def parse_single_points(path_to_images,
                 original_image = int(re.findall(r'\d+', p.parent.name)[0])
                 ffield_parts = root.split("/")
                 ffield = "_".join(ffield_parts[ffield_label[0]:ffield_label[1]])
-                nested_set(data, [ffield, md, original_image], {'energy': energy, 'atoms': atoms,
+                nested_set(data, [ffield, md, original_image], {'energy': energy, 'atoms': atoms, 'e_atoms': e_atoms, 
                                                    'fx': fxs, 'fy': fys, 'fz': fzs})
     return data
 
@@ -132,7 +151,8 @@ def parse_VASP_single_points(path_to_runs):
             fzs = [v.ionic_steps[-1]['forces'][i][2] for i in range(len_structure)]
 
             p = Path(vasprun_path)
-            image = int(p.parent.name) #int(re.findall(r'\d+', p.name)[0])
+            #image = int(p.parent.name) #int(re.findall(r'\d+', p.name)[0])
+            image = int(re.findall(r'\d+', p.parent.name)[0])
             md = p.parent.parent.name
             ffield = p.parent.parent.parent.name
             nested_set(data, [ffield, md, image], {'energy': energy, 'structure': v.final_structure, 

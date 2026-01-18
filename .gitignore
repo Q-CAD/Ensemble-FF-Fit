@@ -3,6 +3,7 @@ jaxreaxff_build/
 base_build/
 lammps_build/
 mace_freeze_build/
+unified_build/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
