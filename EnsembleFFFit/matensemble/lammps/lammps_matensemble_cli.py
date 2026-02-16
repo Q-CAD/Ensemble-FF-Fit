@@ -27,7 +27,8 @@ def main():
     parser.add_argument("--in_lammps", "-in", type=none_or_str, help="Name of the LAMMPs in file", default='in.matensemble')
     parser.add_argument("--control", "-c", type=none_or_str, help="Name of the LAMMPs control file", default='control') # Build out for contiuation jobs here
     parser.add_argument("--structure", "-s", type=none_or_str, help="Name of the .lmp file", default='structure.lmp') # Build out for continuation jobs here
-    
+    parser.add_argument("--finished_file", "-f", type=none_or_str, help="Name of file written when run has completed; use to check submission", default=None)
+
     parser.add_argument("--lammps_task", "-lt", type=none_or_str, help="Name of the python script used to interface with LAMMPs", default='lammps_task.py')
     parser.add_argument("--lammps_task_order", "-lto", nargs='+', 
                         help="Order of system arguments to pass to --lammps_task, i.e., sys.argv[1] is 'ffield'", 
@@ -69,7 +70,8 @@ def run_lammps(args):
     task_arg_list, run_paths = lammps_matensemble.build_full_runs(root0=args.run_directory, files0=[options[c] for c in args.check_files], 
                                                                   root1=args.inputs_directory, files1=[options[k] for k in inputs_directory_keys],
                                                                   labels=args.check_files + inputs_directory_keys, 
-                                                                  ordered_labels=args.lammps_task_order) 
+                                                                  ordered_labels=args.lammps_task_order, 
+                                                                  finished_file=args.finished_file) 
 
     # Generate the tasks per run path based on the number of atoms in each structure
     structure_paths = [task_arg_list[i][args.lammps_task_order.index('structure')] for i in range(len(task_arg_list))]

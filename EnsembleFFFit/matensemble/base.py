@@ -9,6 +9,7 @@ from pathlib import Path
 from collections import defaultdict
 from typing import List, Tuple
 import os
+import glob
 import warnings
 import sys
 
@@ -98,7 +99,8 @@ class MatEnsembleJob(ABC):
 
     def build_full_runs(self, root0: str, files0: list[str], 
                         root1: str, files1: list[str], 
-                        labels: list[str], ordered_labels: list[str]):
+                        labels: list[str], ordered_labels: list[str], 
+                        finished_file: str | None = None):
         """
         Returns a list of dicts, each with keys
           'file0','file1','file2','file3','run_dir'
@@ -110,19 +112,28 @@ class MatEnsembleJob(ABC):
         combos_both, task_dirs = [], []
         for combo0 in combos0:
             for combo1 in combos1:
-                combo_both = combo0 + combo1
-                combos_both.append(combo_both)
 
-                # Now solve for the run directory
+                # Solve for the run directory
                 sec_parts = {f: f.split(os.sep) for f in combo1}
                 longest_file = max(sec_parts, key=lambda f: len(sec_parts[f]))
                 lp = sec_parts[longest_file]
                 p0 = combo0[0].split(os.sep)
                 c = self._common_prefix(p0, lp)
-                # divergent tail from the long path
+
+                # Divergent tail from the long path
                 tail = lp[c+1:-1] # ignore root1 and base filename
                 parent0 = os.path.dirname(combo0[0])
-                task_dirs.append(os.path.join(parent0, *tail))
+                task_dir = os.path.join(parent0, *tail)
+
+                # Check existence of finished_file in task_dir
+                combo_both = combo0 + combo1
+                if os.path.isdir(task_dir) and finished_file is not None:
+                    pattern = os.path.join(task_dir, finished_file)
+                    if glob.glob(pattern):
+                        continue # finished_file pattern already written
+
+                task_dirs.append(task_dir)
+                combos_both.append(combo_both)
 
         reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
 
@@ -194,7 +205,7 @@ class MatEnsembleJob(ABC):
     def dry_run(self, paths, tasks, cpus_per_task, gpus_per_task):
         for i, path in enumerate(paths):
             print(f'path: {paths[i]}, tasks: {tasks[i]}\n')
-        print(f'Total tasks = {np.sum(tasks)}; cpus_per_task={cpus_per_task}; gpus_per_task={gpus_per_task}')
+        print(f'Total tasks = {int(np.sum(tasks))}; cpus_per_task={cpus_per_task}; gpus_per_task={gpus_per_task}')
 
     def run(self, dry_run, task_command, run_tasks, 
                   cpus_per_task, gpus_per_task, 
@@ -295,14 +306,24 @@ class MACEMatEnsemble(MatEnsembleJob):
     def get_tasks(self, paths):
         return [1 for path in paths]
 
-    def construct_tasks(self, task_arg_list, run_paths, fits_per_runpath, upper=10000):
+    def construct_tasks(self, task_arg_list, run_paths, fits_per_runpath, random=False, finished_file=None, upper=10000):
         new_task_arg_list = []
         new_run_paths = []
+
         for i, run_path in enumerate(run_paths):
-            seeds = np.random.choice(np.arange(0, upper), size=fits_per_runpath, replace=False)
+            if random:
+                seeds = np.random.choice(np.arange(0, upper), size=fits_per_runpath, replace=False)
+            else:
+                seeds = [i for i in range(fits_per_runpath)]
+
             for j, seed in enumerate(seeds):
-                new_task_arg_list.append(task_arg_list[i]) # Same inputs here
                 new_run_path = os.path.join(run_path, str(seed))
+                if os.path.isdir(new_run_path) and finished_file is not None:
+                    pattern = os.path.join(new_run_path, finished_file)
+                    if glob.glob(pattern):
+                        continue # finished_file pattern already written
+                
+                new_task_arg_list.append(task_arg_list[i]) # Same inputs here
                 new_run_paths.append(new_run_path)
 
         return new_task_arg_list, new_run_paths

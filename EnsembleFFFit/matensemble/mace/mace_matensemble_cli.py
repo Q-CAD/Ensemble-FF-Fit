@@ -7,6 +7,12 @@ def main():
   # create parser
   parser = argparse.ArgumentParser(description='MACE refitting driver')
   
+  # Parse NoneType for dictionary 
+  def none_or_str(value):
+      if value == 'None':
+          return None
+      return value
+
   # MatEnsemble arguments
   parser.add_argument("--run_directory", "-rd", help="Path to the run directory tree", default='run_directory')
   parser.add_argument("--inputs_directory", "-id", help="Path to input file directory", default='inputs_directory')
@@ -19,10 +25,12 @@ def main():
   parser.add_argument('--train_file', metavar='filename', type=str, default="train.xyz", help='Training .xyz file')
   parser.add_argument('--test_file', metavar='filename', type=str, default="test.xyz", help='Testing .xyz file')
   parser.add_argument('--config', metavar='filename', type=str, default="config.yml", help='Configuration yaml')
+  parser.add_argument("--finished_file", "-f", type=none_or_str, help="Name of file written when run has completed; use to check submission", default=None)
 
   parser.add_argument("--cpus_per_task", "-cpt", help="CPUs per task", type=int, default=16)
   parser.add_argument("--gpus_per_task", "-gpt", help="GPUs per task", type=int, default=1)
   parser.add_argument("--fits_per_runpath", "-fpr", help="Number of MACE fits for each runpath", type=int, default=1)
+  parser.add_argument("--random", "-r", help="Whether to randomly generate seeds", action='store_true')
   parser.add_argument("--dry_run", "-dry", help="Only print the structures to be run", action='store_true') 
 
   args = parser.parse_args()
@@ -48,10 +56,13 @@ def run_mace(args):
   labels = args.check_files + inputs_directory_keys
   task_arg_list, run_paths = mace_matensemble.build_full_runs(root0=args.run_directory, files0=[options[c] for c in args.check_files],
                                                                   root1=args.inputs_directory, files1=[options[k] for k in inputs_directory_keys],
-                                                                  labels=labels, ordered_labels=labels) # No ordering needed
+                                                                  labels=labels, ordered_labels=labels, 
+                                                                  finished_file=None)
   
   # Generate the task_arg_list and run_paths with separate run directories for different starting seeds
-  task_arg_list, run_paths = mace_matensemble.construct_tasks(task_arg_list, run_paths, args.fits_per_runpath)
+  task_arg_list, run_paths = mace_matensemble.construct_tasks(task_arg_list, run_paths, 
+                                                              args.fits_per_runpath, args.random, 
+                                                              args.finished_file)
   
   # Create the arguments dictionary and yield the list of list of argparse argument strings
   task_arg_strs = mace_matensemble.to_str_list(labels=labels, 
