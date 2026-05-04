@@ -40,11 +40,12 @@ def main():
     parser.add_argument("--atoms_per_task", "-apt", help="Atoms per task; passed as list", type=float, default=10)
     parser.add_argument("--cpus_per_task", "-cpt", help="CPUs per task", type=int, default=1)
     parser.add_argument("--gpus_per_task", "-gpt", help="GPUs per task", type=int, default=0)
+    parser.add_argument("--add_task_command", "-atc", help="Prepend to task command", type=str, default='')
     parser.add_argument("--dry_run", "-dry", help="Only print the structures to be run", action='store_true')
 
     args = parser.parse_args()
     run_lammps(args)
-    
+
 def run_lammps(args):
     # Construct an options dictionary and only keep keys without null values
     options = {'ffield': args.ffield, 
@@ -66,25 +67,40 @@ def run_lammps(args):
     # Split the files to be checked in --run_directory vs --input_directory
     inputs_directory_keys = [key for key in options.keys() if key not in args.check_files + ['lammps_task', 'atom_style']]
     
+    # in_lammps is always the recipe file; everything else is a structure file
+    recipe_keys = [k for k in inputs_directory_keys if k == 'in_lammps']
+    structure_keys = [k for k in inputs_directory_keys if k != 'in_lammps']
+
     # Generate combinations of run paths and task arguments
-    task_arg_list, run_paths = lammps_matensemble.build_full_runs(root0=args.run_directory, files0=[options[c] for c in args.check_files], 
-                                                                  root1=args.inputs_directory, files1=[options[k] for k in inputs_directory_keys],
-                                                                  labels=args.check_files + inputs_directory_keys, 
-                                                                  ordered_labels=args.lammps_task_order, 
-                                                                  finished_file=args.finished_file) 
+    task_arg_list, run_paths = lammps_matensemble.build_full_runs_v2(
+        root0=args.run_directory,
+        files0=[options[c] for c in args.check_files],
+        root1=args.inputs_directory,
+        files1=[options[k] for k in structure_keys],
+        recipe_files=[options[k] for k in recipe_keys],
+        labels=args.check_files + structure_keys + recipe_keys,
+        ordered_labels=args.lammps_task_order,
+        finished_file=args.finished_file, 
+        run_directory=args.run_directory,
+        inputs_directory=args.inputs_directory
+    )
+
+    # Correct the run paths based on the location of --in_lammps file
+    #run_paths = lammps_matensemble.modify_write_paths(task_arg_list, run_paths, args.run_directory, args.inputs_directory)
 
     # Generate the tasks per run path based on the number of atoms in each structure
     structure_paths = [task_arg_list[i][args.lammps_task_order.index('structure')] for i in range(len(task_arg_list))]
     tasks = lammps_matensemble.get_tasks(structure_paths, atoms_per_task=args.atoms_per_task) 
   
     # Batch the runs based on the parent level
-    task_arg_list, run_paths, make_paths = lammps_matensemble.batch_by_parent(task_arg_list, run_paths, args.check_files + inputs_directory_keys, args.parent_levels)
+    task_arg_list, run_paths, make_paths = lammps_matensemble.batch_by_parent_v2(task_arg_list, run_paths, args.check_files + inputs_directory_keys, args.parent_levels)
     structure_paths = [task_arg_list[i][args.lammps_task_order.index('structure')][0] for i in range(len(task_arg_list))]
     tasks = lammps_matensemble.get_tasks(structure_paths, atoms_per_task=args.atoms_per_task)
 
     # Execute the MatEnsemble call
+    full_command = lammps_matensemble.generic_task_command(lammps_task_command, user_command=args.add_task_command)
     lammps_matensemble.run(dry_run=True if args.dry_run else False,
-                           task_command=lammps_matensemble.generic_task_command(lammps_task_command), 
+                           task_command=full_command, 
                            run_tasks=tasks,
                            cpus_per_task=args.cpus_per_task, 
                            gpus_per_task=args.gpus_per_task,

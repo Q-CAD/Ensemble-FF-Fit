@@ -27,10 +27,22 @@ class MatEnsembleJob(ABC):
 
     def _collect_paths(self, root: str, names: list[str]) -> dict[str, list[str]]:
         d = {n: [] for n in names}
+        name_set = set(names)
+        for dp, dirs, files in os.walk(root, topdown=True):
+            found_here = False
+            for f in files:
+                if f in name_set:
+                    d[f].append(os.path.abspath(os.path.join(dp, f)))
+                    found_here = True
+            if found_here:
+                dirs.clear()  # don't descend into subdirectories of this directory
+        '''
+        d = {n: [] for n in names}
         for dp, _, files in os.walk(root):
             for f in files:
                 if f in d:
                     d[f].append(os.path.abspath(os.path.join(dp, f)))
+        '''
         return d
 
     def _common_prefix(self, parts1: list[str], parts2: list[str]) -> int:
@@ -137,7 +149,165 @@ class MatEnsembleJob(ABC):
 
         reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
 
-        return reordered_combos_both, task_dirs 
+        return reordered_combos_both, task_dirs
+
+    def build_full_runs_v2(self, root0: str, files0: list[str],
+                    root1: str, files1: list[str],
+                    recipe_files: list[str],
+                    labels: list[str], ordered_labels: list[str],
+                    run_directory: str, 
+                    inputs_directory: str,
+                    finished_file: str | None = None):
+        """
+        root0/files0     - run directory files, proximity matched
+        root1/files1     - inputs directory structure files, proximity matched
+                           within their own subtree
+        root1/recipe_files - recipe files (e.g. ase.json), cross-producted with
+                             all structure combos
+        """
+        combos0 = self._make_proximity_combinations(root0, files0)
+
+        # Proximity match structure files within inputs directory
+        structure_combos = self._make_proximity_combinations(root1, files1)
+
+        # All occurrences of each recipe file, to be cross-producted
+        recipe_paths = self._collect_paths(root1, recipe_files)
+        for n in recipe_files:
+            if not recipe_paths[n]:
+                raise FileNotFoundError(f"{n} not found under {root1}")
+
+        import itertools
+        recipe_combos = [list(combo) for combo in itertools.product(
+            *[recipe_paths[n] for n in recipe_files]
+        )]
+
+        combos_both, task_dirs = [], []
+        run_directory_name = Path(run_directory).name
+        inputs_directory_name = Path(inputs_directory).name
+
+        for combo0 in combos0:
+            for struct_combo in structure_combos:
+                for recipe_combo in recipe_combos:
+
+                    # combo1 is the structure files + recipe files combined
+                    combo1 = struct_combo + recipe_combo
+
+                    # Always derive task_dir from the structure file, not the recipe
+                    longest_file = max(struct_combo, key=lambda f: len(f.split(os.sep)))
+                    rel = os.path.relpath(os.path.dirname(longest_file), root1)
+                    #longest_file = max(combo1, key=lambda f: len(f.split(os.sep)))
+                    #rel = os.path.relpath(os.path.dirname(longest_file), root1)
+                    parent0 = os.path.dirname(combo0[0])
+                    task_dir = os.path.join(parent0, rel)
+
+                    combo_both = combo0 + combo1
+                    mod_task_dir = self.modify_single_run_path(combo_both, 
+                                                               task_dir, 
+                                                               run_directory_name,
+                                                               inputs_directory_name)
+                    
+                    if os.path.isdir(mod_task_dir) and finished_file is not None:
+                        pattern = os.path.join(mod_task_dir, finished_file)
+                        if glob.glob(pattern):
+                            continue
+
+                    task_dirs.append(mod_task_dir)
+                    combos_both.append(combo_both)
+
+        reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
+        return reordered_combos_both, task_dirs
+
+    def modify_single_run_path(self, task_arg, run_path,
+                             run_directory_name, inputs_directory_name):
+        """
+        Apply modify_write_paths logic to a single task_arg/run_path pair.
+        Returns the modified run_path, or the original if no modification needed.
+        """
+        in_lammps_path_parts = Path(task_arg[-1]).parent.parts # Could break here
+
+        if inputs_directory_name not in in_lammps_path_parts:
+            return run_path  # can't modify, return original
+
+        add_index = in_lammps_path_parts.index(inputs_directory_name)
+        remaining = in_lammps_path_parts[add_index+1:]
+        to_add = os.path.join(*remaining) if remaining else ""
+
+        if not to_add:
+            return run_path
+
+        run_path_parts = Path(run_path).parts
+        if run_directory_name not in run_path_parts:
+            return run_path  # can't modify, return original
+
+        where_add_index = run_path_parts.index(run_directory_name)
+        base = Path(*run_path_parts[:where_add_index+1])
+        tail_parts = run_path_parts[where_add_index+1:]
+        tail = Path(*tail_parts) if tail_parts else Path()
+
+        return str(base / to_add / tail)
+
+    def batch_by_parent_v2(self, tasks, run_paths, labels, parent_levels=0):
+
+        if parent_levels == 0:
+            batched_tasks = []
+            new_run_paths = []
+            all_labels = labels + ['run_path']
+            for i, run_path in enumerate(run_paths):
+                batch = [[tasks[i][j]] for j in range(len(labels))]
+                batch.append([run_path])
+                batched_tasks.append(batch)
+                new_run_paths.append(run_path)
+            return batched_tasks, new_run_paths, run_paths
+
+        sep = os.sep
+
+        def get_parent_str(path, n):
+            """Extract parent n levels up using string ops."""
+            parts = path.split(sep)
+            end = len(parts) - n
+            if end <= 0:
+                return sep
+            return sep.join(parts[:end])
+
+        all_labels = labels + ['run_path']
+        groups = defaultdict(lambda: {label: [] for label in all_labels})
+
+        for i, run_path in enumerate(run_paths):
+            parent = get_parent_str(run_path, parent_levels)
+            for j, label in enumerate(labels):
+                groups[parent][label].append(tasks[i][j])
+            groups[parent]['run_path'].append(run_path)
+
+        def merge_child_paths_fast(dct):
+            # Sort by depth (fewest separators = highest in tree = parent first)
+            sorted_paths = sorted(dct.keys(), key=lambda p: p.count(sep))
+            out = {}
+
+            for path in sorted_paths:
+                # Check if any existing key is a prefix of this path
+                # Add sep to avoid /a/b matching /a/bc
+                parent = next(
+                    (p for p in out if path.startswith(p + sep) or path == p),
+                    None
+                )
+                if parent is not None:
+                    for k, v in dct[path].items():
+                        out[parent].setdefault(k, []).extend(v)
+                else:
+                    out[path] = {k: list(v) for k, v in dct[path].items()}
+
+            return out
+
+        groups_merged = merge_child_paths_fast(groups)
+
+        batched_tasks = []
+        new_run_paths = []
+        for parent, contents in groups_merged.items():
+            use_batch = [contents[label] for label in all_labels]
+            batched_tasks.append(use_batch)
+            new_run_paths.append(parent)
+
+        return batched_tasks, new_run_paths, run_paths
 
     def batch_by_parent(self, tasks, run_paths, labels, parent_levels=1):
         """
@@ -156,18 +326,40 @@ class MatEnsembleJob(ABC):
                 p = p.parent
             return p
 
+        def merge_child_paths(dct):
+            out = {}
+
+            # Sort so parents come before children
+            for path in sorted(dct, key=lambda p: Path(p).parts):
+                path_obj = Path(path)
+                parent = next((p for p in out if path_obj.is_relative_to(p)), None)
+
+                if parent:
+                    # Merge into parent
+                    for k, v in dct[path].items():
+                        out[parent].setdefault(k, []).extend(v)
+                else:
+                    # Copy new parent entry
+                    out[path] = {k: list(v) for k, v in dct[path].items()}
+
+            return out
+
         groups = defaultdict(lambda: {label: [] for label in labels + ['run_path']})
 
+        # Group the tasks by parent directory
         for i, run_path in enumerate(run_paths):
             parent = get_parent(run_path, parent_levels)
             for j, label in enumerate(labels):
                 groups[parent][label].append(tasks[i][j])
             groups[parent]['run_path'].append(run_paths[i])
 
+        # Merge the parent directories by super-parents
+        groups_merged = merge_child_paths(groups)
+
         # Build the final output in arbitrary parent‐directory order:
         batched_tasks = []
         new_run_paths = []
-        for parent, contents in groups.items():
+        for parent, contents in groups_merged.items():
             use_batch = []
             for label in labels + ['run_path']: # Add run path to arguments here
                 use_batch.append(contents[label])
@@ -202,7 +394,8 @@ class MatEnsembleJob(ABC):
             python_exe = 'python'
         return python_exe
 
-    def dry_run(self, paths, tasks, cpus_per_task, gpus_per_task):
+    def dry_run(self, paths, task_command, tasks, cpus_per_task, gpus_per_task):
+        print(f'Task Command: {task_command}\n')
         for i, path in enumerate(paths):
             print(f'path: {paths[i]}, tasks: {tasks[i]}\n')
         print(f'Total tasks = {int(np.sum(tasks))}; cpus_per_task={cpus_per_task}; gpus_per_task={gpus_per_task}')
@@ -214,16 +407,15 @@ class MatEnsembleJob(ABC):
                   write_restart_freq=1000000, buffer_time=1):
 
         if dry_run:
-            self.dry_run(task_dir_list, run_tasks, cpus_per_task, gpus_per_task)
+            self.dry_run(task_dir_list, task_command, run_tasks, cpus_per_task, gpus_per_task)
         else:
-            from matensemble.matfluxGen import SuperFluxManager
+            from matensemble.manager import SuperFluxManager
             
             # Make a task list
             task_list=[i for i in range(len(run_tasks))]
 
             master = SuperFluxManager(gen_task_list=task_list,
                                   gen_task_cmd=task_command,
-                                  ml_task_cmd=None,
                                   tasks_per_job=run_tasks,
                                   cores_per_task=cpus_per_task,
                                   gpus_per_task=gpus_per_task,
@@ -256,6 +448,39 @@ class LammpsMatEnsemble(MatEnsembleJob):
                 except StopIteration: # For other structure formats
                     return aaa.get_structure(read(lmp_file_path))
 
+    def modify_write_paths(self, task_arg_list, run_paths, run_directory, inputs_directory):
+        run_directory_name = Path(run_directory).name
+        inputs_directory_name = Path(inputs_directory).name
+
+        mod_run_paths = []
+
+        for i, task_arg in enumerate(task_arg_list):
+            in_lammps_path_parts = Path(task_arg[1]).parent.parts
+
+            if inputs_directory_name not in in_lammps_path_parts:
+                raise ValueError(f"'{inputs_directory_name}' not found in path: {task_arg[1]}")
+            add_index = in_lammps_path_parts.index(inputs_directory_name)
+
+            remaining = in_lammps_path_parts[add_index+1:]
+            to_add = os.path.join(*remaining) if remaining else ""
+
+            if to_add:
+                run_path_parts = Path(run_paths[i]).parts
+
+                if run_directory_name not in run_path_parts:
+                    raise ValueError(f"'{run_directory_name}' not found in path: {run_paths[i]}")
+                where_add_index = run_path_parts.index(run_directory_name)
+
+                base = Path(*run_path_parts[:where_add_index+1])
+                tail_parts = run_path_parts[where_add_index+1:]
+                tail = Path(*tail_parts) if tail_parts else Path()
+                mod_run_path = str(base / to_add / tail)
+                mod_run_paths.append(mod_run_path)
+            else:
+                mod_run_paths.append(run_paths[i])
+
+        return mod_run_paths
+
     def sorting_function(self, path):
         ''' Sort by structure length '''
         structure = self.read_structure_from_lammps(path)
@@ -266,10 +491,13 @@ class LammpsMatEnsemble(MatEnsembleJob):
         structures = [self.read_structure_from_lammps(path) for path in structure_paths]
         return [max(np.floor(len(s)/atoms_per_task).astype(int), 1) for i, s in enumerate(structures)]
 
-    def generic_task_command(self, python_file):
+    def generic_task_command(self, python_file, user_command=''):
         ''' Builds a generic task command for the LAMMPs python interface '''
-        python_exe = self.get_python()
-        return ''.join([python_exe] + [' '] + [python_file]) 
+        if user_command:
+            python_exe = user_command
+        else:
+            python_exe = self.get_python()
+        return f"{python_exe.strip()} {python_file.strip()}" 
 
 class JaxReaxFFMatEnsemble(MatEnsembleJob):
     def __init__(self, run_directory, inputs_directory, **kwargs):

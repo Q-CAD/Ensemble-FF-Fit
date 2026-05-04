@@ -27,6 +27,7 @@ fi
 
 # Load the modules required to compile
 module load PrgEnv-gnu/8.5.0
+module load gcc-native/12.3 
 module load cudatoolkit/12.4
 module load craype-accel-nvidia80
 
@@ -44,18 +45,16 @@ ENV_PIP="$ENV_PATH/bin/pip"
 "$ENV_PY" -m pip install --no-cache-dir --force-reinstall \
   --upgrade pip setuptools wheel \
   --extra-index-url https://download.pytorch.org/whl/cu124 \
-  torch==2.5.0+cu124 \
-  numpy==2.0.0 \
-  cuequivariance==0.6.0 \
-  cuequivariance-torch==0.6.0 \
-  cuequivariance-ops-torch-cu12==0.3.0 \
-  mace-torch "numpy==2.0.0" \
-  cupy-cuda12x==13.5.1 \
-  pymatgen "numpy==2.0.0" \
-  ase "numpy==2.0.0" \
+  cuequivariance \
+  cuequivariance-torch \
+  cuequivariance-ops-torch-cu12 \
+  cupy-cuda12x \
+  pymatgen \
+  ase \
+  pymatgen-analysis-defects \
+  mp-api \
+  jupyter \
   pyarrow
-
-# torch-sim-atomistic "numpy==2.0.0" \
 
 MPICC="cc -shared" pip install --force --no-cache-dir --no-binary=mpi4py mpi4py==4.0.3
 
@@ -76,11 +75,43 @@ BUILD_DIR="$(pwd)/lammps_build"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
+# Build mace from source 
+REPO0="mace"
+[ -d "$REPO0" ] && rm -rf "$REPO0"
+git clone https://github.com/ACEsuit/mace.git
+cd "$REPO0"
+"$ENV_PY" -m pip install --no-cache-dir .
+cd ..
+
 # Clone and install MatEnsemble (editable, skip deps to avoid changing env)
 REPO1="MatEnsemble"
 [ -d "$REPO1" ] && rm -rf "$REPO1"
 git clone https://github.com/Q-CAD/MatEnsemble.git "$REPO1"
 cd "$REPO1"
+"$ENV_PY" -m pip install --no-cache-dir -e . --no-deps
+cd ..
+
+# Clone and install vaspFlux (editable install recommended for development)
+REPO2="vaspflux"
+[ -d "$REPO2" ] && rm -rf "$REPO2"
+git clone https://code.ornl.gov/rym/vaspflux.git "$REPO2"
+cd "$REPO2"
+"$ENV_PY" -m pip install --no-cache-dir -e . --no-deps
+cd ..
+
+# Clone and install the develop branch of HeteroBuilder
+REPO3="vdw_structures"
+[ -d "$REPO3" ] && rm -rf "$REPO3"
+git clone --branch develop --single-branch https://github.com/Q-CAD/HeteroBuilder.git "$REPO3"
+cd "$REPO3"
+"$ENV_PY" -m pip install --no-cache-dir -e . --no-deps
+cd ..
+
+# Clone and install the develop branch of parse2fit
+REPO4="parse2fit"
+[ -d "$REPO4" ] && rm -rf "$REPO4"
+git clone --branch develop --single-branch https://code.ornl.gov/rym/parse2fit.git "$REPO4"
+cd "$REPO4"
 "$ENV_PY" -m pip install --no-cache-dir -e . --no-deps
 cd ..
 

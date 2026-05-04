@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# build_lammps.sh
 # Usage: bash build_unified.sh /absolute/path/to/env
 
 if [ -z "${1:-}" ]; then
@@ -27,16 +26,17 @@ fi
 
 # Create environment with desired conda packages (non-interactive)
 echo "Creating conda env ..."
+# "numpy<2" \
 conda create --yes \
 	     --prefix "$ENV_PATH" \
 	     -c conda-forge \
 	     python=3.11 \
-	     "numpy<2" \
 	     cmake \
 	     cython \
 	     pymatgen \
              pymatgen-analysis-defects \
              matminer \
+	     dscribe \
              mp-api \
              ase \
              scikit-learn \
@@ -56,13 +56,16 @@ export CMAKE_ARGS="-DNUMPY_EXPERIMENTAL_ARRAY_API=0"
 
 # Activate the environment
 "$ENV_PY" -m pip cache purge
-"$ENV_PY" -m pip install --no-cache-dir --force-reinstall --upgrade pip setuptools wheel 
+"$ENV_PY" -m pip install --no-cache-dir --force-reinstall --upgrade pip setuptools wheel
 
-#  --extra-index-url https://download.pytorch.org/whl/cu124 \
-#  torch==2.5.0+cu124 \
-#  cuequivariance==0.6.1 \
-#  cuequivariance-torch==0.6.1 \
-#  cuequivariance-ops-torch-cu12==0.6.1 \
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+# pip install mace-torch
+
+# --extra-index-url https://download.pytorch.org/whl/cu124 \
+# torch==2.5.0+cu124 \
+# cuequivariance==0.6.1 \
+# cuequivariance-torch==0.6.1 \
+# cuequivariance-ops-torch-cu12==0.6.1 \
 #  pymatgen ase pyarrow
 
 #  --extra-index-url https://download.pytorch.org/whl/cu124 \
@@ -101,10 +104,10 @@ BUILD_DIR="$(pwd)/unified_build"
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-# Build mace-torch from the mace-freeze branch 
-REPO0="mace-freeze"
+# Build mace from source 
+REPO0="mace"
 [ -d "$REPO0" ] && rm -rf "$REPO0"
-git clone -b mace-freeze https://github.com/7radians/mace-freeze.git # "$REPO0"
+git clone https://github.com/ACEsuit/mace.git
 cd "$REPO0"
 "$ENV_PY" -m pip install --no-cache-dir .
 cd ..
