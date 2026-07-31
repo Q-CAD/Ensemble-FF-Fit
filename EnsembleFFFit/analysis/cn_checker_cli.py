@@ -4,16 +4,18 @@ import os
 import numpy as np
 from tqdm import tqdm
 from pathlib import Path
-from ase.io import read
 from multiprocessing import Pool, cpu_count
 from pymatgen.analysis.local_env import CrystalNN
 from pymatgen.io.lammps.data import LammpsData
 from pymatgen.io.ase import AseAtomsAdaptor
-from pymatgen.analysis.local_env import CrystalNN
+
 
 def main():
+    """
+    Parse CLI args for the CN-deviation check and run `cn_check`.
+    """
     parser = argparse.ArgumentParser(description="Argument parser to run LAMMPs with Flux using Python")
-    
+
     # Run and input directories
     parser.add_argument("--run_directory", "-rd", help="Path to the run directory tree", default='run_directory')
     parser.add_argument("--inputs_directory", "-id", help="Path to input file directory", default='inputs_directory')
@@ -26,21 +28,23 @@ def main():
     # Read file options
     parser.add_argument("--atom_style", "-as", help="LAMMPs structure file atom style", type=str, default='charge')
     parser.add_argument("--oxi_dct", "-od", help="Pymatgen oxidation dictionary in .json format, e.g., '{\"Bi\":3,\"Se\":-2}'", type=json.loads)
-    parser.add_argument("--use_weights", "-uw", help="Use weights for pymatgen's CN analysis", type=bool, default=True)
+    parser.add_argument("--use_weights", "-uw", help="Disable weights for pymatgen's CN analysis", action='store_false', default=True)
 
     args = parser.parse_args()
     cn_check(args)
 
+
 def compute_cn_diff(use_args):
     """ Helper function to compute the coordination number difference. """
-    cnn, ref_cn_dct, p_tup, p_tup_dct, use_weights  = use_args
+    cnn, ref_cn_dct, p_tup, p_tup_dct, use_weights = use_args
 
     site_inds = [i for i in range(len(p_tup_dct['structure']))]
-    site_els = [str(p_tup_dct['structure'][i].specie.element) for i in range(len(p_tup_dct['structure']))] 
+    site_els = [str(p_tup_dct['structure'][i].specie.element) for i in range(len(p_tup_dct['structure']))]
     unique_site_els = list(np.unique(site_els))
     unique_site_dct = {el: None for el in unique_site_els}
 
-    # Assume that the site elements in the reference and the 
+    # Assume that the site elements in the reference and the comparison structure
+    # are indexed/ordered the same way, so per-element CN lists line up positionally.
     for uel in unique_site_els:
         matched_els_is = [i for i in range(len((p_tup_dct['structure']))) if str(p_tup_dct['structure'][i].specie.element) == uel]
         matched_els_cns = [cnn.get_cn(p_tup_dct['structure'], i, use_weights=use_weights) for i in matched_els_is]
@@ -50,7 +54,14 @@ def compute_cn_diff(use_args):
 
     return (p_tup, unique_site_dct)
 
+
 def get_average_coordination_deviation(args, ref_path_dct, path_dictionary):
+    """
+    Compute reference CrystalNN coordination numbers for each reference structure,
+    then in parallel compute per-element-per-structure norm-deviation of coordination
+    numbers between each run's structure and its matching reference; returns a nested
+    dict keyed by force-field path then run name.
+    """
     print('Constructing reference coordination numbers...')
     cnn = CrystalNN(weighted_cn=args.use_weights)
     ref_cn_dct = {}
@@ -83,7 +94,13 @@ def get_average_coordination_deviation(args, ref_path_dct, path_dictionary):
 
     return structure_dct
 
+
 def comparison_paths(args):
+    """
+    Walk `inputs_directory` to build a dict of reference LAMMPS structures (keyed by
+    parent dir name) and walk `run_directory` to build a dict of comparison structures
+    to check against them, applying the given oxidation-state dict to both.
+    """
     print('Building reference dictionary...')
     ref_dct = {}
     for root, _, _ in os.walk(args.inputs_directory):
@@ -94,7 +111,7 @@ def comparison_paths(args):
             oxi_ref = ld.structure.add_oxidation_state_by_element(args.oxi_dct)
             ref_dct[md_name] = oxi_ref
 
-    print('Finding comparison paths...') 
+    print('Finding comparison paths...')
     path_dictionary = {}
     aaa = AseAtomsAdaptor()
     for root, _, _ in os.walk(args.run_directory):
@@ -103,18 +120,24 @@ def comparison_paths(args):
             parent_name = Path(check_structure_path).parent.name
             ld = LammpsData.from_file(check_structure_path, atom_style=args.atom_style, sort_id=True)
             oxi_s = ld.structure.add_oxidation_state_by_element(args.oxi_dct)
-            path_dictionary[root] = {'name': parent_name, 
-                                     'structure': oxi_s} 
+            path_dictionary[root] = {'name': parent_name,
+                                     'structure': oxi_s}
 
     return ref_dct, path_dictionary
 
+
 def cn_check(args):
+    """
+    Top-level driver: build reference/comparison structure dicts, compute
+    coordination-number deviations, and write the result to `--json_file`.
+    """
     ref_dct, structure_dct = comparison_paths(args)
     deviation_dct = get_average_coordination_deviation(args, ref_dct, structure_dct)
-    
+
     with open(args.json_file, 'w') as json_file:
         json.dump(deviation_dct, json_file, indent=4)
-    return 
+    return
+
 
 if __name__ == '__main__':
     main()

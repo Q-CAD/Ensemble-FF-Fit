@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,29 +11,98 @@ license = { file = "LICENSE" }
 authors = [
     { name = "Ryan Morelock", email = "rym@ornl.gov" }
 ]
+requires-python = ">=3.10"
+# No single Python version is enforced across extras: MatEnsemble is deployed via
+# HPC containers going forward, and whichever Python ships in a given container
+# dictates the version actually used. See TODO.md.
 dependencies = [
-    "pymatgen", 
+    "matensemble @ git+https://github.com/Q-CAD/MatEnsemble.git",
+    "vaspflux @ git+https://code.ornl.gov/rym/vaspflux.git",
+    "vdW_structures @ git+https://github.com/Q-CAD/HeteroBuilder.git@develop",
+    "parse2fit @ git+https://code.ornl.gov/rym/parse2fit.git@develop",
+    "pymatgen",
     "pymatgen-analysis-defects",
-    "mp-api", 
-    "frozendict"
+    "mp-api",
+    "ase",
+    # cuequivariance wheels (the cuda extra, below) are built against a specific
+    # numpy ABI -- if installing that extra produces numpy-related import errors,
+    # pin this to match whatever cuequivariance version you validate.
+    "numpy",
+    "scipy",
+    "matminer",
+    "scikit-learn",
+    "pyarrow",
+    "tqdm",
+    "pyyaml",
 ]
 
-[project.scripts]
-mp_query = "EnsembleFFFit.generation.materials_project.mp_query_cli:main"
-generate_EoS = "EnsembleFFFit.generation.equation_of_state.generate_EoS_cli:main"
-generate_defects = "EnsembleFFFit.generation.defects.generate_defects_cli:main"
-generate_substitutions = "EnsembleFFFit.generation.substitutions.generate_substitutions_cli:main"
-generate_vdW_spacing = "EnsembleFFFit.generation.vdW_layers.generate_vdW_spacing_cli:main"
+[project.optional-dependencies]
+reaxff = [
+    "jax[cuda12]==0.4.35",
+    "frozendict",
+    "jaxreaxff @ git+https://github.com/Q-CAD/JAX-ReaxFF.git",
+]
+# mace-torch is installed from its PyPI release rather than a git ref to the main
+# branch, to avoid unexpected deviations between installs. The mace-freeze fork
+# (github.com/7radians/mace-freeze) is no longer needed -- the frozen-layer
+# approach it provided has since been merged upstream into ACEsuit/mace.
+#
+# GPU acceleration for MACE (cuequivariance on CUDA, openequivariance on ROCm) and
+# torch itself are deliberately NOT listed here -- pick your GPU platform via the
+# `cuda`/`rocm` extras below instead, e.g. `pip install -e ".[mace,cuda]"`. See
+# install_gpu_torch.py and README.md for the full two-step install.
+mace = [
+    "mace-torch",
+]
+# torch itself is intentionally excluded here too, for the same reason as `mace`
+# above -- run install_gpu_torch.py first.
+torchsim = [
+    "torch-sim-atomistic",
+]
+# NVIDIA's CUDA-accelerated equivariant tensor-product kernels, used by the `mace`
+# extra above (and previously also declared for LAMMPS's ML-IAP path, but that's no
+# longer this project's concern -- see the "lammps extra retired" note in TODO.md).
+# Pair with `mace`, e.g. `pip install -e ".[mace,cuda]"`. Confirmed CUDA-only (no
+# ROCm build exists) -- see the "rocm" extra below for the ROCm equivalent.
+cuda = [
+    "cuequivariance>0.6.0",
+    "cuequivariance-torch>0.6.0",
+    "cuequivariance-ops-torch-cu12>0.6.0",
+]
+# openequivariance is a CUDA-*and*-HIP tensor-product kernel generator that MACE
+# supports as an alternative accelerator -- the ROCm-side counterpart to the `cuda`
+# extra's cuequivariance above. Requires a working GCC 9+ (and HIP toolchain) at
+# pip-install time to build its kernels; see TODO.md if a container build hits
+# compiler issues here. Pair with `mace`, e.g. `pip install -e ".[mace,rocm]"`.
+rocm = [
+    "openequivariance",
+]
+# Only needed to run the example notebooks interactively (e.g. on Perlmutter).
+# Registering the Jupyter kernel itself is a separate one-time imperative step
+# that can't live in pyproject.toml -- see TODO.md.
+notebooks = [
+    "jupyter",
+    "py3dmol",
+    "ipykernel",
+]
+dev = ["pytest", "black", "ruff"]
 
-jaxreaxff_matensemble = "EnsembleFFFit.matensemble.reaxff.jaxreaxff_matensemble_cli:main"
-mace_matensemble = "EnsembleFFFit.matensemble.mace.mace_matensemble_cli:main"
-lammps_matensemble = "EnsembleFFFit.matensemble.lammps.lammps_matensemble_cli:main"
+[project.scripts]
+mp_query = "EnsembleFFFit.structures.materials_project.mp_query_cli:main"
+generate_EoS = "EnsembleFFFit.structures.equation_of_state.generate_EoS_cli:main"
+generate_defects = "EnsembleFFFit.structures.defects.generate_defects_cli:main"
+generate_substitutions = "EnsembleFFFit.structures.substitutions.generate_substitutions_cli:main"
+generate_vdW_spacing = "EnsembleFFFit.structures.vdW_layers.generate_vdW_spacing_cli:main"
+
+jaxreaxff_matensemble = "EnsembleFFFit.potential.reaxff.jaxreaxff_matensemble_cli:main"
+mace_matensemble = "EnsembleFFFit.potential.mace.mace_matensemble_cli:main"
+lammps_matensemble = "EnsembleFFFit.molecular_dynamics.pyMD.lammps_matensemble_cli:main"
 
 cn_checker = "EnsembleFFFit.analysis.cn_checker_cli:main"
 
-copy_by_pattern = "EnsembleFFFit.utils.copy_by_pattern_cli:main"
-create_lammps_models = "EnsembleFFFit.utils.create_lammps_models_cli:main"
+copy_by_pattern = "EnsembleFFFit.utilities.copy_by_pattern_cli:main"
+create_lammps_models = "EnsembleFFFit.utilities.create_lammps_models_cli:main"
 
-[tool.setuptools]
-packages = ["EnsembleFFFit"]  # Ensure this matches your package directory name
+[tool.setuptools.packages.find]
+include = ["EnsembleFFFit*"]
 

@@ -1,3 +1,12 @@
+"""
+Run a batch of LAMMPS single-point tasks in one process via the LAMMPS Python
+interface, reusing a single `lammps` instance across structures (avoids
+re-initializing the LAMMPS/calculator object per structure to save time on the
+HPC resource). Expects four positional CLI args, each a Python-literal-list or
+comma-separated string of equal length (force-field files, LAMMPS input scripts,
+control files, structure files); runs one LAMMPS input per zipped tuple, logging
+to a per-structure log file and clearing state between runs.
+"""
 from lammps import lammps
 import sys
 import ast

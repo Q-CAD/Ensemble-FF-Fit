@@ -6,6 +6,11 @@ import sys
 import os
 
 def main():
+    """
+    Parse CLI args (input POSCAR, output LAMMPS data path, whether to build a
+    cubic supercell), optionally build a max-370-atom cubic supercell, and write
+    the result as a LAMMPS data file via `structure_to_lammps`.
+    """
     from_poscar = sys.argv[1]
     structure = Structure.from_file(from_poscar)
     to_lammps = sys.argv[2]
@@ -20,6 +25,10 @@ def main():
     return
 
 def structure_to_lammps(structure, write_path, charge_dct={'Bi': 1, 'Se': -0.667}):
+    """
+    Assign a per-species point charge (default mapping for Bi/Se) to every site
+    in `structure` and write it out as a LAMMPS data file at `write_path`.
+    """
     structure.add_site_property("charge", [charge_dct[str(s.specie)] for s in structure])
     ld = LammpsData.from_structure(structure)
     ld.write_file(filename=write_path, distance=8, charge=5)

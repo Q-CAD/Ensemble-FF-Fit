@@ -8,9 +8,10 @@ from pymatgen.io.lammps.outputs import parse_lammps_log
 from pymatgen.io.vasp.outputs import Vasprun
 from pymatgen.io.ase import AseAtomsAdaptor
 from ase.io import read
-from EnsembleFFFit.utils.copy_by_pattern_cli import get_atom_mapping_from_control
+from EnsembleFFFit.utilities.copy_by_pattern_cli import get_atom_mapping_from_control
 import numpy as np
 from copy import deepcopy
+
 
 def nested_set(dct, keys, value):
     """
@@ -27,10 +28,17 @@ def nested_set(dct, keys, value):
         # Recurse into the next level
         nested_set(dct[keys[0]], keys[1:], value)
 
+
 def get_energy(log_path, image, energy_label, units):
+    """
+    Parse total energy from a LAMMPS log file via `parse_lammps_log`, optionally
+    unit-converting from 'real' (kcal/mol) to the eV-based convention used
+    throughout this module (the `'eV/atom'` label here is just this codebase's
+    generic unit tag, not an actual per-atom normalization).
+    """
     log = parse_lammps_log(log_path)
     energy = None
-    for l in log: 
+    for l in log:
         try:
             energy = float(l.loc[l["Step"] == image, energy_label].iloc[0])  # No error message written
         except IndexError:
@@ -38,7 +46,7 @@ def get_energy(log_path, image, energy_label, units):
                 energy = float(l.loc[l["Step"] == str(image), energy_label].iloc[0])  # Error message written
             except:
                 continue
-    
+
     uc = UnitConverter()
     if energy:
         if units == 'metal': # Compatible with VASP DFT
@@ -47,7 +55,13 @@ def get_energy(log_path, image, energy_label, units):
             energy = uc.convert(energy, 'kcal/mol', 'eV/atom', 'energy')
     return energy
 
+
 def get_atoms(dump_path, mapping):
+    """
+    Read the last frame of a LAMMPS dump file as ASE Atoms, remap generic/placeholder
+    chemical symbols to the true elements via `mapping`, and attach the original
+    forces as `atoms.arrays['forces']`.
+    """
     try:
         atoms_we = read(dump_path, index=-1, format='lammps-dump-text')
     except StopIteration:
@@ -59,7 +73,14 @@ def get_atoms(dump_path, mapping):
     atoms_we.arrays['forces'] = atoms_orig.get_forces()
     return atoms_we
 
+
 def get_eatom(dump_path, units):
+    """
+    Read per-atom energies from the final LAMMPS dump frame, sorted by atom id,
+    with optional unit conversion from 'real' (kcal/mol) to the eV-based convention
+    used throughout this module (the `'eV/atom'` label here is just this codebase's
+    generic unit tag, not an actual per-atom normalization).
+    """
     final_image = next(parse_lammps_dumps(dump_path))
     index = final_image.data['id']
     e_atoms = final_image.data['c_eatom']
@@ -70,10 +91,15 @@ def get_eatom(dump_path, units):
     if units == 'metal':
         pass
     elif units == 'real':
-        e_atoms = [uc.convert(fx, 'kcal/mol', 'eV/atom', 'energy') for e_atom in e_atoms]
+        e_atoms = [uc.convert(e_atom, 'kcal/mol', 'eV/atom', 'energy') for e_atom in e_atoms]
     return e_atoms
 
+
 def get_forces(dump_path, units):
+    """
+    Read per-atom fx/fy/fz from the final LAMMPS dump frame, sorted by atom id,
+    with optional real→metal unit conversion.
+    """
     final_image = next(parse_lammps_dumps(dump_path))
     index = final_image.data['id']
     fxs = final_image.data['fx']
@@ -91,16 +117,29 @@ def get_forces(dump_path, units):
         fzs = [uc.convert(fz, 'kcal/mol', 'eV/atom', 'energy') for fz in fzs]
     return fxs, fys, fzs
 
+
 def parse_single_points(path_to_images,
                             dump_index = 0,
                             energy_label='PotEng',
                             units='metal',
                         ffield_label=(-5, -3)):
+    """
+    Walk a directory tree of LAMMPS single-point runs, matching `*.lammps` log files
+    with `*.dump` files, extract per-image energy/forces/atoms, and return a nested
+    dict keyed by [ffield][md][image].
+
+    Note: both `dump_index` (position among sorted dump files in a directory) and
+    `original_image` (parsed from the parent directory name) are tracked as image
+    indices. The exact reason isn't fully certain, but this appears to guard against
+    occasional log-parsing edge cases (e.g. error messages in a `.log` file throwing
+    off pymatgen's log parser), requiring an index adjustment to correctly match
+    energies to dump files.
+    """
     data = {}
     for root, _, _ in os.walk(os.path.abspath(path_to_images)):
         log_paths = glob.glob(os.path.join(root, '*.lammps'))
         for log_path in log_paths:
-            
+
             p = Path(log_path)
             try:
                 element_mapping = get_atom_mapping_from_control(p)
@@ -112,7 +151,7 @@ def parse_single_points(path_to_images,
             index_path = os.path.join(root, sorted_dump_path_names[dump_index])
             image = int(re.findall(r'\d+', sorted_dump_path_names[dump_index])[0])
             atoms = get_atoms(index_path, element_mapping)
-            
+
             try:
                 energy = get_energy(log_path, image, energy_label, units=units)
             except:
@@ -122,23 +161,27 @@ def parse_single_points(path_to_images,
                 e_atoms = get_eatom(os.path.join(root, index_path), units=units)
             except:
                 e_atoms = []
-            
+
             try:
                 fxs, fys, fzs = get_forces(os.path.join(root, index_path), units=units)
             except Exception:
                 fxs, fys, fzs = [], [], []
-            
+
             if atoms:
                 atoms.info['energy'] = energy
                 md = p.parent.parent.name
                 original_image = int(re.findall(r'\d+', p.parent.name)[0])
                 ffield_parts = root.split("/")
                 ffield = "_".join(ffield_parts[ffield_label[0]:ffield_label[1]])
-                nested_set(data, [ffield, md, original_image], {'energy': energy, 'atoms': atoms, 'e_atoms': e_atoms, 
+                nested_set(data, [ffield, md, original_image], {'energy': energy, 'atoms': atoms, 'e_atoms': e_atoms,
                                                    'fx': fxs, 'fy': fys, 'fz': fzs})
     return data
 
+
 def parse_VASP_single_points(path_to_runs):
+    """
+    Same as `parse_single_points` but for VASP vasprun.xml trees.
+    """
     data = {}
     for root, _, _ in os.walk(path_to_runs):
         vasprun_path = os.path.join(root, 'vasprun.xml')
@@ -155,11 +198,16 @@ def parse_VASP_single_points(path_to_runs):
             image = int(re.findall(r'\d+', p.parent.name)[0])
             md = p.parent.parent.name
             ffield = p.parent.parent.parent.name
-            nested_set(data, [ffield, md, image], {'energy': energy, 'structure': v.final_structure, 
+            nested_set(data, [ffield, md, image], {'energy': energy, 'structure': v.final_structure,
                                                    'fx': fxs, 'fy': fys, 'fz': fzs})
     return data
 
+
 def comparison_dictionary(data_dictionary, ref_key='DFT', rel_image=None):
+    """
+    Compute per-image |energy diff| and per-axis force RMSD between each force field
+    and a reference (`ref_key`), optionally relative to a reference image `rel_image`.
+    """
     def safe_subtract(a, b):
         try:
             return np.subtract(a, b)
@@ -170,13 +218,13 @@ def comparison_dictionary(data_dictionary, ref_key='DFT', rel_image=None):
     for ffield in list(data_dictionary.keys()):
         for md in list(data_dictionary[ffield].keys()):
             for image in list(data_dictionary[ffield][md].keys()):
-                
+
                 # Get energy difference first
                 energy = data_dictionary[ffield][md][image]['energy']
                 ref_energy = data_dictionary[ref_key][md][image]['energy']
                 if rel_image is not None:
                     use_energy = safe_subtract(energy, data_dictionary[ffield][md][rel_image]['energy'])
-                    use_ref = safe_subtract(ref_energy, data_dictionary[ref_key][md][rel_image]['energy']) 
+                    use_ref = safe_subtract(ref_energy, data_dictionary[ref_key][md][rel_image]['energy'])
                 else:
                     use_energy = energy
                     use_ref = ref_energy
@@ -196,13 +244,19 @@ def comparison_dictionary(data_dictionary, ref_key='DFT', rel_image=None):
 
                 # Get the dictionary
                 nested_set(dev_data, [ffield, md, image], {'energy': energy_difference,
-                                                       'fx': fx_rmsd, 
-                                                       'fy': fy_rmsd, 
+                                                       'fx': fx_rmsd,
+                                                       'fy': fy_rmsd,
                                                        'fz': fz_rmsd})
 
     return dev_data
 
+
 def performance_rank(deviation_data, md, energy_weight=1, force_weight=1):
+    """
+    For a given MD run, average energy/force deviations across images per force
+    field, compute a weighted score, print and return the ranking (ascending,
+    lower is better).
+    """
     md_dictionary = {}
     for ff in list(deviation_data.keys()):
         md_dictionary[ff] = {}
@@ -225,17 +279,20 @@ def performance_rank(deviation_data, md, energy_weight=1, force_weight=1):
         print(f"{key}: energy = {inner['energy']}, force = {inner['force']}, score = {inner['score']}")
     return md_dictionary, sorted_items
 
+
 def write_poscars(data_dictionary, to_path, filename='POSCAR'):
+    """
+    Write a POSCAR file for every atoms object in the nested data dict, mirroring
+    the dict's key structure as a directory tree.
+    """
     aaa = AseAtomsAdaptor()
     for top_level, tl_value in data_dictionary.items():
         for mid_level, ml_value in tl_value.items():
             for bottom_level, bl_value in ml_value.items():
                 atoms = bl_value['atoms']
-                structure = aaa.get_structure(atoms).sort() 
+                structure = aaa.get_structure(atoms).sort()
                 dir_path = os.path.join(str(to_path), str(top_level), str(mid_level), str(bottom_level))
                 os.makedirs(dir_path, exist_ok=True)
                 structure.to(os.path.join(dir_path, 'POSCAR'))
 
-    return 
-
-
+    return

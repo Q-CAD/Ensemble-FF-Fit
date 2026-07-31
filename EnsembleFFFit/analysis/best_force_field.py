@@ -115,8 +115,8 @@ def rank_ff_scores(
     Rank force fields by average deviation score.
     Lower is better by default.
     """
-    
-    deviation_dct = get_ff_deviations(ff_dct, 
+
+    deviation_dct = get_ff_deviations(ff_dct,
                                       reference_dct,
                                       energy_weight,
                                       force_weight,
