@@ -166,3 +166,45 @@ directories, plus `potential/reaxff`, `potential/mace`, and `molecular_dynamics/
 the declared dependencies/extras). `torch`/`e3nn`/`mace` were also found in
 `utilities/create_lammps_models_cli.py`, but per the entry above, those are handled via a guarded import
 rather than added to core.
+
+## `MatEnsembleJob.sorting_function`/`generic_task_command` duplication — resolved
+
+Both deleted outright, along with `get_tasks`, `dict_to_argv`/`dict_to_str_list`, `to_str_list`,
+`construct_tasks`, `read_structure_from_lammps`, `get_python`, and `modify_write_paths` — confirmed unused
+by anything outside the three now-deprecated `*_matensemble_cli.py` scripts (see the new entry below), so
+there was nothing left to dedup once those scripts' fate was settled.
+
+## `build_full_runs`/`batch_by_parent` v1/v2 duplication — resolved
+
+`build_full_runs`/`batch_by_parent` are now `@abstractmethod`s on `MatEnsembleJob`, each concrete subclass
+providing its own implementation under that single name (no more `_v2` suffix): `MACEMatEnsemble` and
+`JaxReaxFFMatEnsemble` each carry their own copy of the old non-`_v2` (flat proximity-matched) logic,
+`MDMatEnsemble` (renamed from `LammpsMatEnsemble`, and generalized to cover ASE/TorchSim as well as LAMMPS)
+carries the old `_v2` (recipe-file cross-product) logic. `JaxReaxFFMatEnsemble` got a direct copy rather
+than a shared intermediate base class, given its likely eventual deprecation (see the entry below) — not
+worth a permanent shared-base fixture for two classes where one is expected to go away.
+
+## `MatEnsembleJob.run()`'s `SuperFluxManager`/`poolexecutor` call — resolved
+
+`run()`/`dry_run()` deleted outright rather than rebuilt against the current `Chore`/`FluxManager` API.
+Each backend now exposes a `run_individual(overrides)` static method (MACE: calls `mace.cli.run_train.run`
+directly; MD: dynamically imports the user-supplied driver script by path and dispatches to its named
+entry-point function) that a thin `@pipe.chore`-decorated wrapper function in the submission script calls —
+see `test/multi_MACE_stages/run_multi_stage_MACE.py`/`run_single_points.py` for the working pattern. This
+is what made the three `*_matensemble_cli.py` scripts' fate need deciding — see the new entry below.
+
+## Three `*_matensemble_cli.py` console scripts — deprecated, not yet deleted
+
+`potential/mace/mace_matensemble_cli.py`, `potential/reaxff/jaxreaxff_matensemble_cli.py`, and
+`molecular_dynamics/pyMD/lammps_matensemble_cli.py` (the `mace_matensemble`/`jaxreaxff_matensemble`/
+`lammps_matensemble` console scripts in `pyproject.toml`) all depended solely on `MatEnsembleJob.run()`
+for execution, which no longer exists (see the entry above) — they are left in place, broken, rather than
+fixed, since the intended replacement is the `Pipeline`/chore-based pattern now exercised by the
+`test/multi_MACE_stages/` scripts. They (and their `pyproject.toml` script registrations) should be deleted
+once real replacements exist for each: `lammps_matensemble_cli.py`'s useful bits are already superseded by
+`MDMatEnsemble.build_lists`/`run_individual`; `mace_matensemble_cli.py`'s by
+`MACEMatEnsemble.build_mace_dcts`/`run_individual`. `jaxreaxff_matensemble_cli.py` has not been exercised or
+tested at all this pass (JAX-ReaxFF was out of scope) — it's a deprecation candidate given JAX-ReaxFF's
+upstream-deprecated status, but there's a published paper tied to this workflow, and a dedicated Perlmutter
+container for a JAX-ReaxFF fitting workflow may be built before this script is retired. Evaluate in that
+context before deleting it outright.

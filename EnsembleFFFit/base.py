@@ -1,15 +1,11 @@
 from abc import ABC, abstractmethod
-from pymatgen.io.lammps.data import LammpsData
-from pymatgen.io.ase import AseAtomsAdaptor
-from ase.io import read
-import numpy as np
-from itertools import product
-from copy import deepcopy
 from pathlib import Path
 from collections import defaultdict
+import itertools
 import os
 import glob
-import warnings
+
+from EnsembleFFFit.utilities.general import import_module_from_path
 
 
 class MatEnsembleJob(ABC):
@@ -19,38 +15,33 @@ class MatEnsembleJob(ABC):
         self.options = kwargs
 
     @abstractmethod
-    def sorting_function(self, paths):
-        """Abstract hook: return a sort key for the given path(s), used by subclasses to control MatEnsemble job ordering."""
+    def build_full_runs(self, *args, **kwargs):
+        """Abstract hook: construct the (task_arg_list, run_paths) mapping for this backend's run/inputs layout."""
         pass
 
     @abstractmethod
-    def get_tasks(self, paths):
-        """Abstract hook: return the number of parallel tasks to allocate per path."""
+    def batch_by_parent(self, *args, **kwargs):
+        """Abstract hook: group constructed tasks by parent directory for this backend's batching needs."""
         pass
 
     def _collect_paths(self, root: str, names: list[str]) -> dict[str, list[str]]:
         """
         Walk `root` and collect absolute paths of any file whose name is in `names`;
-        once a directory containing at least one target filename is found, stop
-        descending into its subdirectories. Returns `{name: [paths]}`.
+        once a directory containing *every* target filename is found, stop
+        descending into its subdirectories (that directory is a complete match, so
+        nothing relevant can be nested below it). A directory with only some of the
+        target filenames does not prune the walk -- the remaining names may still
+        live deeper below it (e.g. shared train/test files near the root with
+        per-variant config files nested underneath). Returns `{name: [paths]}`.
         """
         d = {n: [] for n in names}
         name_set = set(names)
         for dp, dirs, files in os.walk(root, topdown=True):
-            found_here = False
-            for f in files:
-                if f in name_set:
-                    d[f].append(os.path.abspath(os.path.join(dp, f)))
-                    found_here = True
-            if found_here:
-                dirs.clear()  # don't descend into subdirectories of this directory
-        '''
-        d = {n: [] for n in names}
-        for dp, _, files in os.walk(root):
-            for f in files:
-                if f in d:
-                    d[f].append(os.path.abspath(os.path.join(dp, f)))
-        '''
+            found_here = {f for f in files if f in name_set}
+            for f in found_here:
+                d[f].append(os.path.abspath(os.path.join(dp, f)))
+            if found_here == name_set:
+                dirs.clear()  # complete match; nothing relevant can be nested below
         return d
 
     def _common_prefix(self, parts1: list[str], parts2: list[str]) -> int:
@@ -117,54 +108,21 @@ class MatEnsembleJob(ABC):
             reordered.append(new_combo)
         return reordered
 
+
+class MDMatEnsemble(MatEnsembleJob):
+    """
+    Supports MD-driven backends whose run construction needs a recipe file
+    (e.g. LAMMPS `.in`/control files, or an ASE run config) cross-producted
+    against structure files, distinct from a single flat check-file per run
+    (that's MACEMatEnsemble's shape) -- currently used for LAMMPS, ASE, and
+    (in principle) TorchSim MD drivers.
+    """
+
+    def __init__(self, run_directory, inputs_directory, **kwargs):
+        super().__init__(run_directory, inputs_directory, **kwargs)
+        """ MD self.options keys are backend-dependent, e.g. "ffield"/"in_file"/"control"/"structure" for LAMMPS """
+
     def build_full_runs(self, root0: str, files0: list[str],
-                        root1: str, files1: list[str],
-                        labels: list[str], ordered_labels: list[str],
-                        finished_file: str | None = None):
-        """
-        Cross-product every proximity-matched combo from root0/files0 with every
-        proximity-matched combo from root1/files1 (minus any combo whose derived
-        task_dir already contains a `finished_file` match), and derive a run/task
-        directory for each surviving combo.
-
-        Returns (reordered_combos, task_dirs): reordered_combos is a list of path
-        lists ordered per `ordered_labels`, and task_dirs is the parallel list of
-        derived task directories.
-        """
-        combos0 = self._make_proximity_combinations(root0, files0)
-        combos1 = self._make_proximity_combinations(root1, files1)
-
-        combos_both, task_dirs = [], []
-        for combo0 in combos0:
-            for combo1 in combos1:
-
-                # Solve for the run directory
-                sec_parts = {f: f.split(os.sep) for f in combo1}
-                longest_file = max(sec_parts, key=lambda f: len(sec_parts[f]))
-                lp = sec_parts[longest_file]
-                p0 = combo0[0].split(os.sep)
-                c = self._common_prefix(p0, lp)
-
-                # Divergent tail from the long path
-                tail = lp[c+1:-1] # ignore root1 and base filename
-                parent0 = os.path.dirname(combo0[0])
-                task_dir = os.path.join(parent0, *tail)
-
-                # Check existence of finished_file in task_dir
-                combo_both = combo0 + combo1
-                if os.path.isdir(task_dir) and finished_file is not None:
-                    pattern = os.path.join(task_dir, finished_file)
-                    if glob.glob(pattern):
-                        continue # finished_file pattern already written
-
-                task_dirs.append(task_dir)
-                combos_both.append(combo_both)
-
-        reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
-
-        return reordered_combos_both, task_dirs
-
-    def build_full_runs_v2(self, root0: str, files0: list[str],
                     root1: str, files1: list[str],
                     recipe_files: list[str],
                     labels: list[str], ordered_labels: list[str],
@@ -177,18 +135,20 @@ class MatEnsembleJob(ABC):
                                 within their own subtree
         root1/recipe_files   - recipe files (e.g. ase.json), cross-producted with
                                 all structure combos
-        labels/ordered_labels - as in `build_full_runs`: `labels` names each position
-                                in the raw combo (run files + structure files + recipe
-                                files, in that concatenation order), and `ordered_labels`
+        labels/ordered_labels - `labels` names each position in the raw combo
+                                (run files + structure files + recipe files, in
+                                that concatenation order), and `ordered_labels`
                                 gives the order to reassemble them into for output.
-        run_directory/inputs_directory - passed through to `modify_single_run_path` so
-                                the derived task_dir can be corrected to reflect where,
-                                under `inputs_directory`, the matched structure file
-                                actually lives.
+        run_directory/inputs_directory - passed through to `_modify_single_run_path`
+                                so the derived task_dir can be corrected to reflect
+                                where, under `inputs_directory`, the matched recipe
+                                file actually lives.
         finished_file        - if given, skip any combo whose (modified) task_dir already
                                 contains a file matching this glob pattern.
 
-        Returns (reordered_combos, task_dirs), same shape as `build_full_runs`.
+        Returns (reordered_combos, task_dirs): reordered_combos is a list of path
+        lists ordered per `ordered_labels`, and task_dirs is the parallel list of
+        derived task directories.
         """
         combos0 = self._make_proximity_combinations(root0, files0)
 
@@ -201,7 +161,6 @@ class MatEnsembleJob(ABC):
             if not recipe_paths[n]:
                 raise FileNotFoundError(f"{n} not found under {root1}")
 
-        import itertools
         recipe_combos = [list(combo) for combo in itertools.product(
             *[recipe_paths[n] for n in recipe_files]
         )]
@@ -220,16 +179,17 @@ class MatEnsembleJob(ABC):
                     # Always derive task_dir from the structure file, not the recipe
                     longest_file = max(struct_combo, key=lambda f: len(f.split(os.sep)))
                     rel = os.path.relpath(os.path.dirname(longest_file), root1)
-                    #longest_file = max(combo1, key=lambda f: len(f.split(os.sep)))
-                    #rel = os.path.relpath(os.path.dirname(longest_file), root1)
                     parent0 = os.path.dirname(combo0[0])
                     task_dir = os.path.join(parent0, rel)
 
                     combo_both = combo0 + combo1
-                    mod_task_dir = self.modify_single_run_path(combo_both,
-                                                               task_dir,
-                                                               run_directory_name,
-                                                               inputs_directory_name)
+                    if recipe_combo:
+                        mod_task_dir = self._modify_single_run_path(recipe_combo,
+                                                                   task_dir,
+                                                                   run_directory_name,
+                                                                   inputs_directory_name)
+                    else:
+                        mod_task_dir = task_dir
 
                     if os.path.isdir(mod_task_dir) and finished_file is not None:
                         pattern = os.path.join(mod_task_dir, finished_file)
@@ -242,19 +202,25 @@ class MatEnsembleJob(ABC):
         reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
         return reordered_combos_both, task_dirs
 
-    def modify_single_run_path(self, task_arg, run_path,
+    def _modify_single_run_path(self, recipe_arg, run_path,
                              run_directory_name, inputs_directory_name):
         """
-        Apply modify_write_paths logic to a single task_arg/run_path pair.
-        Returns the modified run_path, or the original if no modification needed.
+        Correct `run_path` for the location of the recipe file, which
+        `build_full_runs`'s own task_dir formula deliberately ignores (it
+        derives task_dir from the structure file only). `recipe_arg` is the
+        recipe-file combo for this task -- callers should skip calling this
+        entirely when there is no recipe file, rather than passing some other
+        file positionally (that file's location is already fully accounted for
+        in `run_path`, and re-inserting it here would double it up). Returns the
+        modified run_path, or the original if no modification needed.
         """
-        in_lammps_path_parts = Path(task_arg[-1]).parent.parts # Could break here
+        recipe_path_parts = Path(recipe_arg[-1]).parent.parts
 
-        if inputs_directory_name not in in_lammps_path_parts:
+        if inputs_directory_name not in recipe_path_parts:
             return run_path  # can't modify, return original
 
-        add_index = in_lammps_path_parts.index(inputs_directory_name)
-        remaining = in_lammps_path_parts[add_index+1:]
+        add_index = recipe_path_parts.index(inputs_directory_name)
+        remaining = recipe_path_parts[add_index+1:]
         to_add = os.path.join(*remaining) if remaining else ""
 
         if not to_add:
@@ -271,7 +237,7 @@ class MatEnsembleJob(ABC):
 
         return str(base / to_add / tail)
 
-    def batch_by_parent_v2(self, tasks, run_paths, labels, parent_levels=0):
+    def batch_by_parent(self, tasks, run_paths, labels, parent_levels=0):
         """
         Group tasks by the directory `parent_levels` levels above each run_path (or
         verbatim per-path grouping if `parent_levels==0`), merging any resulting
@@ -340,6 +306,119 @@ class MatEnsembleJob(ABC):
 
         return batched_tasks, new_run_paths, run_paths
 
+    def build_lists(self, lammps_task, parent_levels, check_files, finished_file=None):
+        """
+        Build the (task_arg_list, run_paths, make_paths, task_command,
+        batch_labels) needed to submit one chore per (or one chore per batch
+        of) MD run, using `self.run_directory`/`self.inputs_directory`/
+        `self.options` (set by `__init__`). `lammps_task` names the
+        user-authored driver script living under `self.inputs_directory`
+        (e.g. an ASE or LAMMPS execution script) -- kept general across MD
+        backends by construction (proximity matching + recipe/structure
+        cross-product), not tied to any one backend's file layout beyond
+        which `self.options` keys are present. `finished_file` (a glob
+        pattern, e.g. "properties.json") skips any run whose task_dir already
+        contains a match -- see `build_full_runs`.
+        """
+        task_command = os.path.abspath(os.path.join(self.inputs_directory, lammps_task))
+        if not os.path.isfile(task_command):
+            raise ValueError(f'Invalid task command {task_command}; file does not exist in {self.inputs_directory}!')
+
+        # Split the files to be checked in --run_directory vs --input_directory
+        inputs_directory_keys = [key for key in self.options.keys() if key not in check_files + ['lammps_task', 'atom_style']]
+
+        # in_file is always the recipe file; everything else is a structure file
+        recipe_keys = [k for k in inputs_directory_keys if k == 'in_file']
+        structure_keys = [k for k in inputs_directory_keys if k != 'in_file']
+
+        # Generate combinations of run paths and task arguments
+        task_arg_list, run_paths = self.build_full_runs(
+            root0=self.run_directory,
+            files0=[self.options[c] for c in check_files],
+            root1=self.inputs_directory,
+            files1=[self.options[k] for k in structure_keys],
+            recipe_files=[self.options[k] for k in recipe_keys],
+            labels=check_files + structure_keys + recipe_keys,
+            ordered_labels=check_files + structure_keys + recipe_keys,
+            finished_file=finished_file,
+            run_directory=self.run_directory,
+            inputs_directory=self.inputs_directory
+        )
+
+        # Batch the runs based on the parent level
+        batch_labels = check_files + inputs_directory_keys
+        task_arg_list, run_paths, make_paths = self.batch_by_parent(task_arg_list, run_paths, batch_labels, parent_levels)
+
+        return task_arg_list, run_paths, make_paths, task_command, batch_labels
+
+    @staticmethod
+    def run_individual(task_dict):
+        """
+        Import the user-supplied MD driver script (`task_dict['task_command']`)
+        by path and dispatch to its entry-point function (named by
+        `task_dict['entry_point']`, since the function being called is a
+        general, configurable choice -- not hardcoded to any one driver's
+        function name). The module name is derived from the driver script's
+        own filename (extension stripped), not hardcoded either, so this
+        works for any user-authored driver script, not just one specific one.
+        """
+        module_name = Path(task_dict['task_command']).stem
+        driver = import_module_from_path(module_name, task_dict['task_command'])
+        entry_point = getattr(driver, task_dict['entry_point'])
+        return entry_point(task_dict['ffield'], task_dict['structure'], task_dict['output'])
+
+
+class JaxReaxFFMatEnsemble(MatEnsembleJob):
+    def __init__(self, run_directory, inputs_directory, **kwargs):
+        super().__init__(run_directory, inputs_directory, **kwargs)
+
+    def build_full_runs(self, root0: str, files0: list[str],
+                        root1: str, files1: list[str],
+                        labels: list[str], ordered_labels: list[str],
+                        finished_file: str | None = None):
+        """
+        Cross-product every proximity-matched combo from root0/files0 with every
+        proximity-matched combo from root1/files1 (minus any combo whose derived
+        task_dir already contains a `finished_file` match), and derive a run/task
+        directory for each surviving combo.
+
+        Returns (reordered_combos, task_dirs): reordered_combos is a list of path
+        lists ordered per `ordered_labels`, and task_dirs is the parallel list of
+        derived task directories.
+        """
+        combos0 = self._make_proximity_combinations(root0, files0)
+        combos1 = self._make_proximity_combinations(root1, files1)
+
+        combos_both, task_dirs = [], []
+        for combo0 in combos0:
+            for combo1 in combos1:
+
+                # Solve for the run directory
+                sec_parts = {f: f.split(os.sep) for f in combo1}
+                longest_file = max(sec_parts, key=lambda f: len(sec_parts[f]))
+                lp = sec_parts[longest_file]
+                p0 = combo0[0].split(os.sep)
+                c = self._common_prefix(p0, lp)
+
+                # Divergent tail from the long path
+                tail = lp[c+1:-1] # ignore root1 and base filename
+                parent0 = os.path.dirname(combo0[0])
+                task_dir = os.path.join(parent0, *tail)
+
+                # Check existence of finished_file in task_dir
+                combo_both = combo0 + combo1
+                if os.path.isdir(task_dir) and finished_file is not None:
+                    pattern = os.path.join(task_dir, finished_file)
+                    if glob.glob(pattern):
+                        continue # finished_file pattern already written
+
+                task_dirs.append(task_dir)
+                combos_both.append(combo_both)
+
+        reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
+
+        return reordered_combos_both, task_dirs
+
     def batch_by_parent(self, tasks, run_paths, labels, parent_levels=1):
         """
         Given tasks = [(ffield1, struct_path1), (ffield2, struct_path2), …],
@@ -401,257 +480,186 @@ class MatEnsembleJob(ABC):
 
         return batched_tasks, new_run_paths, run_paths
 
-    def dict_to_argv(self, d, bool_arg=True):
-        """
-        Turn a dict of {option_name: value} into a flat list of CLI args:
-          {"foo": "bar", "baz": 1, "flag": True}
-        → ["--foo", "bar", "--baz", "1", "--flag"]
-        Boolean True→ include the flag, False→ omit it.
-        """
-        argv = []
-        for k, v in d.items():
-            flag = f"--{k}"
-            if isinstance(v, bool):
-                if v and bool_arg: # Pass argument as bool
-                    argv.extend([flag, str(v)])
-                else:
-                    argv.append(flag) # Treat as single flag
-            else:
-                argv.extend([flag, str(v)])
-        return argv
-
-    def get_python(self):
-        """Return `$CONDA_PREFIX/bin/python` if a conda environment is active, else fall back to the bare `python` command."""
-        try:
-            python_exe = os.path.join(os.environ['CONDA_PREFIX'], 'bin', 'python')
-        except KeyError:
-            python_exe = 'python'
-        return python_exe
-
-    def dry_run(self, paths, task_command, tasks, cpus_per_task, gpus_per_task):
-        """Print the task command, per-path task counts, and totals without submitting anything."""
-        print(f'Task Command: {task_command}\n')
-        for i, path in enumerate(paths):
-            print(f'path: {paths[i]}, tasks: {tasks[i]}\n')
-        print(f'Total tasks = {int(np.sum(tasks))}; cpus_per_task={cpus_per_task}; gpus_per_task={gpus_per_task}')
-
-    def run(self, dry_run, task_command, run_tasks,
-                  cpus_per_task, gpus_per_task,
-                  task_arg_list, task_dir_list,
-                  make_paths_list,
-                  write_restart_freq=1000000, buffer_time=1):
-        """Either print a dry-run summary, or create output directories and submit the batch via `SuperFluxManager.poolexecutor`."""
-        if dry_run:
-            self.dry_run(task_dir_list, task_command, run_tasks, cpus_per_task, gpus_per_task)
-        else:
-            from matensemble.manager import SuperFluxManager
-
-            # Make a task list
-            task_list=[i for i in range(len(run_tasks))]
-
-            master = SuperFluxManager(gen_task_list=task_list,
-                                  gen_task_cmd=task_command,
-                                  tasks_per_job=run_tasks,
-                                  cores_per_task=cpus_per_task,
-                                  gpus_per_task=gpus_per_task,
-                                  write_restart_freq=write_restart_freq)
-
-            # Make directories for outputs if they do not exist
-            for make_path in make_paths_list:
-                os.makedirs(make_path, exist_ok=True)
-
-            master.poolexecutor(task_arg_list=task_arg_list,
-                            buffer_time=buffer_time,
-                            task_dir_list=task_dir_list)
-        return
-
-
-class LammpsMatEnsemble(MatEnsembleJob):
-    def __init__(self, run_directory, inputs_directory, **kwargs):
-        super().__init__(run_directory, inputs_directory, **kwargs)
-        """ LAMMPS self.options keys for generic_task_command are "ffield", "in", "control" and "structure" """
-
-    def read_structure_from_lammps(self, lmp_file_path):
-        """
-        Read a structure from a LAMMPS file: try pymatgen's lammps-data reader with
-        `self.options['atom_style']` first, fall back to ASE's lammps-dump-text
-        reader, then a generic ASE `read()`. Returns a pymatgen Structure.
-        """
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            try: # For lammps-data format
-                return LammpsData.from_file(lmp_file_path, atom_style=self.options['atom_style']).structure
-            except KeyError: # For lammps-dump-text format
-                try:
-                    aaa = AseAtomsAdaptor()
-                    return aaa.get_structure(read(lmp_file_path, format='lammps-dump-text'))
-                except StopIteration: # For other structure formats
-                    return aaa.get_structure(read(lmp_file_path))
-
-    def modify_write_paths(self, task_arg_list, run_paths, run_directory, inputs_directory):
-        """
-        Recompute each run_path by inserting the portion of the corresponding
-        structure-file path below `inputs_directory` into the run_path at
-        `run_directory`; raises ValueError if either directory name is missing
-        from the respective path.
-
-        Note: this method's only call site is currently commented out in
-        `lammps_matensemble_cli.py`.
-        """
-        run_directory_name = Path(run_directory).name
-        inputs_directory_name = Path(inputs_directory).name
-
-        mod_run_paths = []
-
-        for i, task_arg in enumerate(task_arg_list):
-            in_lammps_path_parts = Path(task_arg[1]).parent.parts
-
-            if inputs_directory_name not in in_lammps_path_parts:
-                raise ValueError(f"'{inputs_directory_name}' not found in path: {task_arg[1]}")
-            add_index = in_lammps_path_parts.index(inputs_directory_name)
-
-            remaining = in_lammps_path_parts[add_index+1:]
-            to_add = os.path.join(*remaining) if remaining else ""
-
-            if to_add:
-                run_path_parts = Path(run_paths[i]).parts
-
-                if run_directory_name not in run_path_parts:
-                    raise ValueError(f"'{run_directory_name}' not found in path: {run_paths[i]}")
-                where_add_index = run_path_parts.index(run_directory_name)
-
-                base = Path(*run_path_parts[:where_add_index+1])
-                tail_parts = run_path_parts[where_add_index+1:]
-                tail = Path(*tail_parts) if tail_parts else Path()
-                mod_run_path = str(base / to_add / tail)
-                mod_run_paths.append(mod_run_path)
-            else:
-                mod_run_paths.append(run_paths[i])
-
-        return mod_run_paths
-
-    def sorting_function(self, path):
-        """ Sort by structure length """
-        structure = self.read_structure_from_lammps(path)
-        return len(structure)
-
-    def get_tasks(self, structure_paths, atoms_per_task=10):
-        """ Set based on structure length """
-        structures = [self.read_structure_from_lammps(path) for path in structure_paths]
-        return [max(np.floor(len(s)/atoms_per_task).astype(int), 1) for i, s in enumerate(structures)]
-
-    def generic_task_command(self, python_file, user_command=''):
-        """ Builds a generic task command for the LAMMPs python interface """
-        if user_command:
-            python_exe = user_command
-        else:
-            python_exe = self.get_python()
-        return f"{python_exe.strip()} {python_file.strip()}"
-
-
-class JaxReaxFFMatEnsemble(MatEnsembleJob):
-    def __init__(self, run_directory, inputs_directory, **kwargs):
-        super().__init__(run_directory, inputs_directory, **kwargs)
-
-    def sorting_function(self, path):
-        """
-        Sort-key hook for MatEnsemble job ordering; not yet supported for this
-        force-field type, so a constant is returned to signal that ordering
-        doesn't matter here.
-        """
-        return int(1)
-
-    def get_tasks(self, paths, tasks_per_path):
-        """Return `tasks_per_path` repeated once per path (ignores path content)."""
-        return [tasks_per_path for path in paths]
-
-    def dict_to_str_list(self, d, labels, task_arg_list, ignore_list):
-        """
-        Convert an argparse Namespace `d` into a base kwargs dict (excluding
-        `ignore_list` keys); for each row in `task_arg_list`, override the entries
-        named by `labels` and flatten to CLI argv via `dict_to_argv`. Returns a
-        list of argv lists.
-        """
-        task_arg_strs = []
-        args_dct = {k: v for k, v in vars(d).items() if k not in ignore_list}
-        for i, task_arg in enumerate(task_arg_list):
-            task_arg_dct = deepcopy(args_dct)
-            for j, arg in enumerate(task_arg):
-                task_arg_dct[labels[j]] = arg
-            task_arg_str = self.dict_to_argv(task_arg_dct)
-            task_arg_strs.append(task_arg_str)
-
-        return task_arg_strs
-
-    def generic_task_command(self):
-        """Unimplemented stub; the task command is hardcoded directly in the corresponding CLI script instead."""
-        pass
-
 
 class MACEMatEnsemble(MatEnsembleJob):
     def __init__(self, run_directory, inputs_directory, **kwargs):
         super().__init__(run_directory, inputs_directory, **kwargs)
 
-    def sorting_function(self, path):
+    def build_full_runs(self, root0: str, files0: list[str],
+                        root1: str, files1: list[str],
+                        labels: list[str], ordered_labels: list[str],
+                        finished_file: str | None = None):
         """
-        Sort-key hook for MatEnsemble job ordering; not yet supported for this
-        force-field type, so a constant is returned to signal that ordering
-        doesn't matter here.
+        Cross-product every proximity-matched combo from root0/files0 with every
+        proximity-matched combo from root1/files1 (minus any combo whose derived
+        task_dir already contains a `finished_file` match), and derive a run/task
+        directory for each surviving combo.
+
+        Returns (reordered_combos, task_dirs): reordered_combos is a list of path
+        lists ordered per `ordered_labels`, and task_dirs is the parallel list of
+        derived task directories.
         """
-        return int(1)
+        combos0 = self._make_proximity_combinations(root0, files0)
+        combos1 = self._make_proximity_combinations(root1, files1)
 
-    def get_tasks(self, paths):
-        """Return a task count of 1 for every path (MACE fits are single-task)."""
-        return [1 for path in paths]
+        combos_both, task_dirs = [], []
+        for combo0 in combos0:
+            for combo1 in combos1:
 
-    def construct_tasks(self, task_arg_list, run_paths, fits_per_runpath, random=False, finished_file=None, upper=10000):
-        """
-        Expand each run_path into `fits_per_runpath` seeded sub-paths
-        (`run_path/seed`), all sharing the parent's task args, for independent
-        MACE fits. Seeds are drawn without replacement from `[0, upper)` if
-        `random=True`, else `0..fits_per_runpath-1`. Skips any sub-path already
-        containing a file matching the `finished_file` glob pattern.
-        """
-        new_task_arg_list = []
-        new_run_paths = []
+                # Solve for the run directory
+                sec_parts = {f: f.split(os.sep) for f in combo1}
+                longest_file = max(sec_parts, key=lambda f: len(sec_parts[f]))
+                lp = sec_parts[longest_file]
+                p0 = combo0[0].split(os.sep)
+                c = self._common_prefix(p0, lp)
 
-        for i, run_path in enumerate(run_paths):
-            if random:
-                seeds = np.random.choice(np.arange(0, upper), size=fits_per_runpath, replace=False)
-            else:
-                seeds = [i for i in range(fits_per_runpath)]
+                # Divergent tail from the long path
+                tail = lp[c+1:-1] # ignore root1 and base filename
+                parent0 = os.path.dirname(combo0[0])
+                task_dir = os.path.join(parent0, *tail)
 
-            for j, seed in enumerate(seeds):
-                new_run_path = os.path.join(run_path, str(seed))
-                if os.path.isdir(new_run_path) and finished_file is not None:
-                    pattern = os.path.join(new_run_path, finished_file)
+                # Check existence of finished_file in task_dir
+                combo_both = combo0 + combo1
+                if os.path.isdir(task_dir) and finished_file is not None:
+                    pattern = os.path.join(task_dir, finished_file)
                     if glob.glob(pattern):
                         continue # finished_file pattern already written
 
-                new_task_arg_list.append(task_arg_list[i]) # Same inputs here
-                new_run_paths.append(new_run_path)
+                task_dirs.append(task_dir)
+                combos_both.append(combo_both)
 
-        return new_task_arg_list, new_run_paths
+        reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
 
-    def to_str_list(self, labels, task_arg_list, run_paths):
+        return reordered_combos_both, task_dirs
+
+    def batch_by_parent(self, tasks, run_paths, labels, parent_levels=1):
         """
-        Build the MACE CLI argv for each run_path: derive `seed` from the run_path's
-        basename, set `name=f'MACE_{seed}'`, merge in the labeled task args, flatten
-        via `dict_to_argv`.
+        Given tasks = [(ffield1, struct_path1), (ffield2, struct_path2), …],
+        group them by the parent directory of each run_path defined by parent_levels.
+
+        Returns: [
+            [[structA, structB, …], [ffieldA, ffieldB, …]],
+            [[structC, structD, …], [ffieldC, ffieldD, …]],
+            …
+        ]
+        (Illustrative only — the actual per-group ordering of inner lists follows
+        the caller-supplied `labels` list, not a fixed struct/ffield order.)
         """
-        # Create the base argument string for MACE force field fitting
-        task_arg_strs = []
+        def get_parent(path, parent_levels):
+            p = Path(path)
+            for _ in range(parent_levels):
+                p = p.parent
+            return p
+
+        def merge_child_paths(dct):
+            out = {}
+
+            # Sort so parents come before children
+            for path in sorted(dct, key=lambda p: Path(p).parts):
+                path_obj = Path(path)
+                parent = next((p for p in out if path_obj.is_relative_to(p)), None)
+
+                if parent:
+                    # Merge into parent
+                    for k, v in dct[path].items():
+                        out[parent].setdefault(k, []).extend(v)
+                else:
+                    # Copy new parent entry
+                    out[path] = {k: list(v) for k, v in dct[path].items()}
+
+            return out
+
+        groups = defaultdict(lambda: {label: [] for label in labels + ['run_path']})
+
+        # Group the tasks by parent directory
         for i, run_path in enumerate(run_paths):
-            seed = Path(run_path).name
-            name = f'MACE_{seed}'
-            task_arg_dct = {'name': name, 'seed': seed}
+            parent = get_parent(run_path, parent_levels)
             for j, label in enumerate(labels):
-                task_arg_dct[label] = task_arg_list[i][j]
-            task_arg_str = self.dict_to_argv(task_arg_dct)
-            task_arg_strs.append(task_arg_str)
+                groups[parent][label].append(tasks[i][j])
+            groups[parent]['run_path'].append(run_paths[i])
 
-        return task_arg_strs
+        # Merge the parent directories by super-parents
+        groups_merged = merge_child_paths(groups)
 
-    def generic_task_command(self):
-        """Unimplemented stub; the task command is hardcoded directly in the corresponding CLI script instead."""
-        pass
+        # Build the final output in arbitrary parent‐directory order:
+        batched_tasks = []
+        new_run_paths = []
+        for parent, contents in groups_merged.items():
+            use_batch = []
+            for label in labels + ['run_path']: # Add run path to arguments here
+                use_batch.append(contents[label])
+            batched_tasks.append(use_batch)
+            new_run_paths.append(parent)
+
+        return batched_tasks, new_run_paths, run_paths
+
+    def build_mace_dcts(self, check_files, finished_file=None):
+        """
+        Build the list of per-run MACE override dicts (foundation_model/config/
+        train_file/test_file plus results_dir/work_dir/name) needed to submit
+        one chore per fit, using `self.run_directory`/`self.inputs_directory`/
+        `self.options` (set by `__init__`). `finished_file` (a glob pattern,
+        e.g. "MACE_*.model") skips any run whose task_dir already contains a
+        match -- see `build_full_runs`.
+        """
+        inputs_directory_keys = [key for key in self.options.keys() if key not in check_files]
+        labels = check_files + inputs_directory_keys
+
+        task_arg_list, run_paths = self.build_full_runs(
+            root0=self.run_directory, files0=[self.options[c] for c in check_files],
+            root1=self.inputs_directory, files1=[self.options[k] for k in inputs_directory_keys],
+            labels=labels, ordered_labels=labels, finished_file=finished_file
+        )
+
+        task_arg_dct_list = [dict(zip(labels, task_arg)) for task_arg in task_arg_list]
+        run_path_arg_list = [{'results_dir': run_path, 'work_dir': run_path, 'name': f'MACE_{str(i)}'} for i, run_path in enumerate(run_paths)]
+        mace_arg_dct_list = [{**task_dct, **run_dct} for task_dct, run_dct in zip(task_arg_dct_list, run_path_arg_list, strict=True)]
+
+        return mace_arg_dct_list
+
+    @staticmethod
+    def run_individual(overrides):
+        """
+        Run a single MACE fit from a per-run `overrides` dict (foundation_model/
+        config/train_file/test_file/results_dir/work_dir/name/...). Imports
+        `mace` lazily -- this method is the only thing in this module that
+        needs the `mace` extra installed, so importing EnsembleFFFit.base
+        itself doesn't require it.
+        """
+        from mace.cli.run_train import run
+        from mace.tools import build_default_arg_parser
+
+        name = overrides.get("name", "MatEnsemble")
+        config_path = overrides.get("config")
+
+        initial_args = ["--name", name]
+        if config_path:
+            initial_args += ["--config", config_path]
+
+        args = build_default_arg_parser().parse_args(initial_args)
+
+        for key, value in overrides.items():
+            if key in ("name", "config", "finished_file"):
+                continue  # already handled above / below
+            setattr(args, key, value)
+
+        work_path = overrides.get("work_dir")
+        if work_path:
+            os.makedirs(work_path, exist_ok=True)
+
+        # `finished_file` here is deliberately an execution-time skip, not a
+        # build-time filter (contrast build_mace_dcts's own finished_file
+        # param) -- a caller relying on this chore's *completion* to trigger
+        # further work (e.g. a Pipeline.strategy processing chore) needs the
+        # chore to still run and succeed even when the fit itself was already
+        # done, rather than never being submitted at all.
+        finished_file = overrides.get("finished_file")
+        already_done = bool(finished_file and work_path and glob.glob(os.path.join(work_path, finished_file)))
+        if not already_done:
+            run(args)
+
+        # results_dir/name are included (not just status) so callers watching
+        # this chore's completion (e.g. a Pipeline.strategy processing chore)
+        # can locate the fitted model file directly, without re-walking the
+        # run_directory -- MACE writes it to f"{results_dir}/{name}.model".
+        return {"status": "complete", "results_dir": overrides.get("results_dir"), "name": name}
