@@ -182,7 +182,7 @@ def build_mace_ensemble_inputs(training_xyz_by_label, validation_xyz_paths, outp
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Built in a temp file, never directly inside output_dir: a stray
-    # top-level test.xyz there would give MACEMatEnsemble's proximity
+    # top-level test.xyz there would give FFMatEnsemble's proximity
     # matcher one more test.xyz match than train.xyz/config.yml matches,
     # making test.xyz the anchor and creating a spurious extra fitting task
     # (confirmed -- it duplicates one folder's results_dir with a mismatched

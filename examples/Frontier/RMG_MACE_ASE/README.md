@@ -74,8 +74,8 @@ python install_gpu_torch.py          # detects ROCm, installs the matching torch
 pip install -e ".[mace,rocm]"        # MACE + ROCm-accelerated equivariant kernels
 ```
 
-See the main repo `README.md` for the full extras list if you need other backends
-(`reaxff`, `torchsim`, `cuda` for non-AMD platforms).
+See the main repo `README.md` for the full extras list if you need other platform/backend combinations
+(`torchsim`, `cuda` for non-AMD platforms).
 
 ## 3. Build the `rmg-gpu` executable natively
 
@@ -218,9 +218,17 @@ cp model.model FF/generation_1/mace-omat-medium/model.model
 ```
 
 `fine_tuning.run_directory` (`FF/generation_1/mace-omat-medium`) is where
-`MACEMatEnsemble` looks for a seed model to fine-tune from; keep this copy
+`FFMatEnsemble` looks for a seed model to fine-tune from; keep this copy
 strictly under `generation_1/`, not alongside `generation_0`'s copy, or a stray
 second `model.model` can trigger unwanted extra re-fits (see pitfalls below).
+
+The actual MACE-fitting logic (building `mace`'s argparse `Namespace`, calling
+`mace.cli.run_train.run`) lives in `FF/mace_fit.py`, pointed at by
+`fine_tuning.ff_task`/`entry_point` in `workflow_config.yaml` — `FFMatEnsemble`
+itself is a generic, backend-agnostic dispatcher (same pattern as
+`converge_dft_data`'s `dft_task`/`rmg_dft.py`). Fitting a different FF backend
+means writing a new driver script with a matching `run_<backend>_fit(overrides)`
+entry point and pointing `ff_task` at it, not changing `EnsembleFFFit` itself.
 
 If you're fitting against a different foundation model instead, swap the
 download URL above and update `fine_tuning.foundation_model`/
@@ -277,7 +285,7 @@ python run_pipeline.py --config workflow_config.yaml --stage select_dft_candidat
   computing a fallback node count — floor division can produce
   `Resources(num_tasks=0, ...)`, which is invalid.
 - **A stray second `model.model` under `fine_tuning.run_directory`'s ancestor
-  directory causes unwanted extra re-fits** — `MACEMatEnsemble` recursively
+  directory causes unwanted extra re-fits** — `FFMatEnsemble` recursively
   searches for *any* file named `foundation_model` and cross-products every match
   against all `mace_inputs` folders. Keep the one seed model's directory
   (`FF/generation_1/mace-omat-medium`) free of unrelated copies.

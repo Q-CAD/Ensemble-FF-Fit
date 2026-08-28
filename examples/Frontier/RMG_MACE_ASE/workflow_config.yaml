@@ -81,7 +81,7 @@ build_ff_inputs:
 # fitting, its reactive per-variant validation single points, and the flat,
 # upfront finite-temperature MD batch, all in one Pipeline/submission.
 fine_tuning:
-  # MACEMatEnsemble recursively searches run_directory for ANY file named
+  # FFMatEnsemble recursively searches run_directory for ANY file named
   # foundation_model and cross-products every match it finds against all
   # mace_inputs folders -- so run_directory must point directly at the one
   # seed model's own directory (generation_1/mace-omat-medium), not a
@@ -95,12 +95,19 @@ fine_tuning:
   # model before running this stage.
   run_directory: FF/generation_1/mace-omat-medium
   inputs_directory: FF/mace_inputs
+  # ff_task/entry_point name the FF-fitting driver script and its entry-point
+  # function -- same convention as converge_dft_data's dft_task/entry_point.
+  # Porting to a different FF backend means pointing ff_task at a different
+  # driver script with a matching run_<backend>_fit(overrides) entry point,
+  # not touching Ensemble-FF-Fit itself.
+  ff_task: FF/mace_fit.py
+  entry_point: run_mace_fit
   check_files: [foundation_model]
   foundation_model: model.model
   train_file: train.xyz
   test_file: test.xyz
   config: config.yml
-  finished_file: MACE_*.model
+  finished_file: FF_*.model
   num_tasks: 1
   cores_per_task: 1
   gpus_per_task: 1
@@ -116,7 +123,7 @@ validation_mirroring:
 copy_force_fields:
   target_directory: MD/single_points/validation/force_fields
   target_name: model.model
-  pattern: '^MACE_([^._-]+)\.model$'
+  pattern: '^FF_([^._-]+)\.model$'
 
 MD_single_points:
   inputs_directory: MD/single_points/validation/ase_inputs

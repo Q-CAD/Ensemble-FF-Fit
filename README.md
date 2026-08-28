@@ -5,7 +5,8 @@ This package allows **data** and **time efficient fine-tuning of physics-based a
 
 PyRMG code allows performing high-throughput ab initio DFT calculations using the RMG code (https://github.com/RMGDFT/rmgdft).  MatEnsemble is used to perform adaptive asynchronous job scheduling.  
 
-Currently the package is implemented for: JAX-ReaxFF and MACE type force-fields.
+Currently the package is implemented for MACE-type force-fields (JAX-ReaxFF support is on hold pending a
+future paper-driven revisit -- see TODO.md).
 
 Future plans: Include support for universal ML-FFs such as CHGNET and M3GNet for quantum materials.  
 
@@ -39,7 +40,6 @@ you're CPU-only):
 pip install -e ".[mace,cuda]"        # MACE, CUDA-accelerated (cuequivariance)
 pip install -e ".[mace,rocm]"        # MACE, ROCm-accelerated (openequivariance)
 pip install -e ".[mace]"             # MACE, no GPU acceleration library beyond torch itself
-pip install -e ".[reaxff]"           # JAX-ReaxFF (CUDA-only; deprecated upstream, see TODO.md)
 pip install -e ".[torchsim]"         # experimental Torch Sim MD driver
 pip install -e ".[notebooks]"        # jupyter/py3dmol/ipykernel, for interactive/notebook work
 pip install -e ".[dev]"              # pytest/black/ruff

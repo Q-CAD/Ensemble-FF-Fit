@@ -154,7 +154,7 @@ def run_converge_dft_data(config):
     }
 
     dft = DFTMatEnsemble(directory, directory, **options)
-    dft_dct_list = dft.build_dft_dcts(check_files, finished_file=finished_file)
+    dft_dct_list = dft.build_dft_dcts(dft_task, check_files, entry_point, finished_file=finished_file)
 
     if not dft_dct_list:
         # build_full_runs itself is cheap (just directory walks/proximity matching) --
@@ -192,7 +192,11 @@ def run_converge_dft_data(config):
         return DFTMatEnsemble.run_individual(task_dict)
 
     for dft_dct in dft_dct_list:
-        task_dict = {**dft_dct, 'dft_task': dft_task, 'entry_point': entry_point}
+        # dft_dct already carries 'dft_task'/'entry_point' -- embedded by
+        # build_dft_dcts itself now, not injected here (see FFMatEnsemble's
+        # build_ff_dcts for the same convention). Copied (not aliased) since
+        # 'allocated_nodes' may get overridden below, per-iteration.
+        task_dict = dict(dft_dct)
 
         # Sized per-job from this task's own computed allocated_nodes, not a
         # single global value -- different structures/recipes can legitimately
@@ -491,7 +495,7 @@ def run_fit_and_validate(config):
     from matensemble.pipeline import Pipeline
     from matensemble.model import Resources
     from matensemble.chore import ChoreSpec
-    from EnsembleFFFit.base import MACEMatEnsemble, MDMatEnsemble
+    from EnsembleFFFit.base import FFMatEnsemble, MDMatEnsemble
     from EnsembleFFFit.utilities.general import ensemble_fffit_pythonpath, make_mirrored_rename_dest_path_fn
 
     fine_tuning_cfg = config['fine_tuning']
@@ -500,7 +504,7 @@ def run_fit_and_validate(config):
     ft_md_cfg = config.get('finite_temperature_md')
     mirror_cfg = config.get('validation_mirroring')
 
-    _require(fine_tuning_cfg, 'fine_tuning', ['run_directory', 'inputs_directory'])
+    _require(fine_tuning_cfg, 'fine_tuning', ['run_directory', 'inputs_directory', 'ff_task'])
     _require(copy_cfg, 'copy_force_fields', ['target_directory'])
     _require(md_cfg, 'MD_single_points', ['inputs_directory'])
     if ft_md_cfg:
@@ -544,9 +548,10 @@ def run_fit_and_validate(config):
                 num_tasks=fine_tuning_cfg.get('num_tasks', 1),
                 cores_per_task=fine_tuning_cfg.get('cores_per_task', 1),
                 gpus_per_task=fine_tuning_cfg.get('gpus_per_task', 1))
-    def fit_mace_chore(overrides):
-        """Thin chore wrapper -- the real MACE-fitting logic lives in MACEMatEnsemble.run_individual."""
-        return MACEMatEnsemble.run_individual(overrides)
+    def fit_mace_chore(task_dict):
+        """Thin chore wrapper -- the real fitting logic lives in whatever driver script
+        fine_tuning.ff_task points at (see FFMatEnsemble.run_individual)."""
+        return FFMatEnsemble.run_individual(task_dict)
 
     @pipe.chore(name="run_ase", **md_resources_kwargs)
     def run_ase_chore(task_dict):
@@ -609,13 +614,17 @@ def run_fit_and_validate(config):
                            'test_file': fine_tuning_cfg.get('test_file', 'test.xyz')}
     fine_tuning_options = {k: v for k, v in fine_tuning_options.items() if v is not None}
 
-    mace_matensemble = MACEMatEnsemble(mace_run_directory, fine_tuning_cfg['inputs_directory'], **fine_tuning_options)
+    ff_task = str(Path(fine_tuning_cfg['ff_task']).resolve())
+    ff_entry_point = fine_tuning_cfg.get('entry_point', 'run_mace_fit')
+
+    ff_matensemble = FFMatEnsemble(mace_run_directory, fine_tuning_cfg['inputs_directory'], **fine_tuning_options)
     check_files = fine_tuning_cfg.get('check_files', ['foundation_model'])
     # Deliberately finished_file=None here: every variant must get a fit_mace
     # chore submitted, even already-finished ones, so its completion still
     # triggers copy_and_spawn_md -- the skip-if-already-fit check happens at
-    # execution time inside MACEMatEnsemble.run_individual instead.
-    mace_arg_dict_list = mace_matensemble.build_mace_dcts(check_files, finished_file=None)
+    # execution time inside the driver script (mace_fit.py's run_mace_fit)
+    # via FFMatEnsemble.run_individual instead.
+    mace_arg_dict_list = ff_matensemble.build_ff_dcts(ff_task, check_files, ff_entry_point, finished_file=None)
     mace_finished_file = fine_tuning_cfg.get('finished_file')
     if mace_finished_file:
         for overrides in mace_arg_dict_list:

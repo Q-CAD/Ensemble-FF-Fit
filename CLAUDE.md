@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 EnsembleFFFit coordinates data- and time-efficient fine-tuning of interatomic potentials/force-fields
-(both physics-based and ML, e.g. JAX-ReaxFF, MACE, LAMMPS-based FFs) by fitting an *ensemble* of models
+(currently MACE; JAX-ReaxFF support is on hold, see `TODO.md`) by fitting an *ensemble* of models
 against ab initio (DFT) data, using adaptive asynchronous job scheduling (MatEnsemble, an external sibling
 package) plus on-the-fly uncertainty quantification (UQ) to decide what new training data to generate
 next. It now also drives the DFT convergence step itself (RMG, via `density_functional_theory/rmg/`), not
@@ -31,8 +31,8 @@ python install_gpu_torch.py                     # step 1: detect ROCm/CUDA, inst
 pip install -e ".[mace,cuda]"                    # step 2: backend extra + platform extra, combined as needed
 ```
 
-See **README.md's Installation section** for the full set of extras (`mace`, `reaxff`, `torchsim` ×
-`cuda`, `rocm`) and example combinations — not duplicated here. A few implementation notes worth knowing
+See **README.md's Installation section** for the full set of extras (`mace`, `torchsim` × `cuda`, `rocm`)
+and example combinations — not duplicated here. A few implementation notes worth knowing
 if you're touching this area:
 
 - `install_gpu_torch.py` fails loudly (non-zero exit, clear message) rather than guessing if it can't
@@ -94,18 +94,26 @@ or consumes its outputs. Both live at the top of the `EnsembleFFFit` package (no
   script* calls; the submission script builds a `matensemble.pipeline.Pipeline`, registers chores via
   `pipe.call(...)`, and submits via `pipe.submit(...)` — see
   `examples/Frontier/RMG_MACE_ASE/run_pipeline.py` for the current working pattern end-to-end.
-- Four concrete subclasses, one per backend, each supplying the sizing/task-arg logic `base.py` needs and
-  its own `run_individual`:
+- Three concrete subclasses, one per backend, each supplying the sizing/task-arg logic `base.py` needs and
+  its own `run_individual`. All three now embed the driver-script path (`*_task`) and its entry-point
+  function name into every dict `build_*_dcts`/`build_task_dicts` returns, rather than leaving it for the
+  caller to inject afterward — `MDMatEnsemble` set this convention originally; `DFTMatEnsemble` and
+  `FFMatEnsemble` were retrofitted/designed to match it for consistency (see `TODO.md`).
   - `MDMatEnsemble` (in `base.py`; renamed from `LammpsMatEnsemble` and generalized) — covers ASE and
     TorchSim MD drivers as well as LAMMPS; `run_individual` dynamically imports the user-supplied driver
     script by path and dispatches to its named entry-point function.
-  - `JaxReaxFFMatEnsemble` — converts an argparse namespace into per-task CLI-arg lists for JAX-ReaxFF.
-  - `MACEMatEnsemble` — `build_mace_dcts` fans a single run-path into per-seed subdirectories so each
-    ensemble member gets its own MACE fit; `run_individual` calls `mace.cli.run_train.run` directly. See
-    `TODO.md` for the planned generalization of this class into a backend-agnostic `FFMatEnsemble`.
+  - `FFMatEnsemble` (renamed from `MACEMatEnsemble`) — `build_ff_dcts` fans a single run-path into
+    per-seed subdirectories so each ensemble member gets its own fit; a clean, backend-agnostic wrapper —
+    `run_individual` dynamically imports the user-supplied fitting driver script (`task_dict['ff_task']`)
+    and dispatches to its named entry point, exactly like `MDMatEnsemble`/`DFTMatEnsemble`, rather than
+    calling `mace.cli.run_train.run` directly itself. All the actual MACE-fitting logic now lives in
+    `examples/Frontier/RMG_MACE_ASE/FF/mace_fit.py`, not here — porting to a different FF backend later
+    means writing a new driver script with the same entry-point contract, no `base.py` changes.
+    JAX-ReaxFF support (previously `JaxReaxFFMatEnsemble`) is removed from this branch, not ported into
+    `FFMatEnsemble` — see `TODO.md`.
   - `DFTMatEnsemble` — the RMG DFT backend; `build_dft_dcts` sizes each structure's node/GPU footprint
     (see `density_functional_theory/rmg/` below), `run_individual` dispatches to a site-specific driver
-    script (e.g. `rmg_dft.py`) by path/entry-point, same convention as `MDMatEnsemble`.
+    script (e.g. `rmg_dft.py`) by path/entry-point, same convention as `MDMatEnsemble`/`FFMatEnsemble`.
 - **`in_queue.py`** is a separate SLURM-level helper (`sbatch` submission, `squeue` polling, sentinel-file
   based done/fail detection, auto-resubmission) operating one level above MatEnsemble's in-job Flux task
   distribution. It has no callers anywhere in this repo (its only caller was an example notebook that has
@@ -125,7 +133,7 @@ working directory). `convergence.py`/`rmg_log.py` parse RMG's own log output for
 See `examples/Frontier/RMG_MACE_ASE/README.md` for the full container/build/launch story around actually
 running `rmg-gpu` — that operational knowledge lives there, not here.
 
-### `potential/{mace,reaxff}/` and `molecular_dynamics/{ase,lammps,torchsim}/` — per-backend drivers
+### `potential/mace/` and `molecular_dynamics/{ase,lammps,torchsim}/` — per-backend drivers
 
 `molecular_dynamics/` mirrors `potential/`/`density_functional_theory/`'s per-backend-folder convention —
 `ase/`, `lammps/`, `torchsim/`, each holding that backend's per-task driver script(s), plus a shared
@@ -142,14 +150,15 @@ generic by-path loader, not a `pyMD` import).
   `Pipeline`/chore pattern and haven't been exercised against it — likely stale relative to what
   `examples/Frontier/RMG_MACE_ASE/MD/*/ase_inputs/*.py` now demonstrates working; flagged for review, not
   removed.
-- **`lammps/lammps_matensemble_cli.py`** is a deprecated, not-yet-deleted console script (its
-  `pyproject.toml` registration has already been removed) — it depended on `MatEnsembleJob.run()`, which no
-  longer exists, and its `from EnsembleFFFit.base import LammpsMatEnsemble` import is now additionally
-  broken outright (that class was renamed to `MDMatEnsemble`). The current pattern is the `Pipeline`/
-  `@pipe.chore` one described above; see `TODO.md` for what still needs to happen before this file is
-  deleted.
+- **`lammps/lammps_matensemble_cli.py`** and **`potential/mace/mace_matensemble_cli.py`** are deprecated,
+  not-yet-deleted console scripts (their `pyproject.toml` registrations have already been removed) — both
+  depended on `MatEnsembleJob.run()`, which no longer exists, and both now have additionally broken imports
+  from the renames above (`from EnsembleFFFit.base import LammpsMatEnsemble` → `MDMatEnsemble`;
+  `MACEMatEnsemble` → `FFMatEnsemble`). The current pattern is the `Pipeline`/`@pipe.chore` one described
+  above; see `TODO.md` for what still needs to happen before these files are deleted.
 - `potential/mace/build_ensemble_inputs.py`/`write_training_xyz.py` are the current, actively-used MACE
-  training-input builders.
+  training-input builders. `potential/mace/create_lammps_models_cli.py` (moved from `utilities/`, since
+  it's MACE-specific) needs the `mace` extra despite being a core-registered console script; see `TODO.md`.
 
 ### `structures/` — training-structure generation CLIs
 
@@ -177,14 +186,13 @@ deviation via `pymatgen`'s `CrystalNN`), orthogonal to the energy/force analysis
 
 ### `utilities/` — misc CLIs and structure deduplication
 
-`create_lammps_models_cli.py`/`formation_energy_lammps_runs.py`/`parse_vasp_aimd_cli.py` are standalone
-helper CLIs. `copy_by_pattern_cli.py`'s console-script registration has been removed (same as
-`cn_checker_cli.py` above) — the file remains, unregistered. `cluster_lammps_runs.py` featurizes
-structures with matminer's `CrystalNNFingerprint`, builds a pairwise dissimilarity matrix, and
-hierarchically clusters to pick representative structures per formula/cluster (reduces redundant training
-data) — it's the one module here that's part of the generate→analyze pipeline rather than a standalone
-tool. `create_lammps_models_cli.py` needs the `mace` extra despite being registered as a core console
-script; see `TODO.md` for how that's handled, and for the plan to eventually move it under `potential/mace/`.
+`formation_energy_lammps_runs.py`/`parse_vasp_aimd_cli.py` are standalone helper CLIs (`create_lammps_models_cli.py`
+used to live here too — moved to `potential/mace/`, see above). `copy_by_pattern_cli.py`'s console-script
+registration has been removed (same as `cn_checker_cli.py` above) — the file remains, unregistered.
+`cluster_lammps_runs.py` featurizes structures with matminer's `CrystalNNFingerprint`, builds a pairwise
+dissimilarity matrix, and hierarchically clusters to pick representative structures per formula/cluster
+(reduces redundant training data) — it's the one module here that's part of the generate→analyze pipeline
+rather than a standalone tool.
 
 ### `examples/`
 

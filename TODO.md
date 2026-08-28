@@ -14,15 +14,16 @@ extra in `pyproject.toml` (`torch-sim-atomistic`) is a separate opt-in for exact
 once Torch Sim is standardized in those environments; until then, calling `make_prop_calculators` with a
 mapping that includes `"kinetic_energy"` or `"temperature"` will raise `NameError`.
 
-## JAX-ReaxFF `run_reaxff` missing `make_paths_list`
+## JAX-ReaxFF support removed from this branch (not ported into `FFMatEnsemble`)
 
-`EnsembleFFFit/potential/reaxff/jaxreaxff_matensemble_cli.py`'s `run_reaxff` calls
-`JaxReaxFFMatEnsemble.run(...)` without the required `make_paths_list` argument, so it raises `TypeError`
-on every invocation. Not fixed: JAX-ReaxFF's CUDA/jaxlib requirements conflict with MACE's in a shared
-environment (this is exactly why `reaxff` and `mace` are separate `pyproject.toml` extras), and the
-upstream optimizer is deprecated by its original developers — it may be removed entirely in a future
-release rather than patched in place. Decide whether to fix or remove JAX-ReaxFF support before this path
-is needed again.
+`potential/reaxff/` (`jaxreaxff_matensemble_cli.py`, `JaxReaxFFMatEnsemble`) and the `reaxff`
+`pyproject.toml` extra have been deleted outright on this branch, per explicit decision — the upstream
+optimizer is deprecated by its own developers, and `FFMatEnsemble` (the `MACEMatEnsemble` generalization,
+see below) is deliberately a clean wrapper with no backend-specific logic, so there was nothing worth
+preserving here to generalize against. JAX-ReaxFF fitting may be needed again for a future paper; if so,
+pull the relevant logic back from the `main`/`Claude` branches (where it still exists) rather than
+reconstructing it from memory, and give it its own driver script under the `FFMatEnsemble` pattern rather
+than reviving `JaxReaxFFMatEnsemble`/`MatEnsembleJob.run()`.
 
 ## LAMMPS batching per-batch task count
 
@@ -111,8 +112,9 @@ Added as part of the extras-based `pyproject.toml` redesign. Two things are stil
 
 ## `create_lammps_models_cli.py` needs the `mace` extra despite being a core console script
 
-`EnsembleFFFit/utilities/create_lammps_models_cli.py` (registered as the `create_lammps_models` console
-script, which is always installed regardless of which extras a user chose) needs `torch`/`e3nn`/`mace` to
+`EnsembleFFFit/potential/mace/create_lammps_models_cli.py` (moved from `utilities/`, since it's
+MACE-specific; registered as the `create_lammps_models` console script, which is always installed
+regardless of which extras a user chose) needs `torch`/`e3nn`/`mace` to
 actually run the conversion. Its imports are now deferred into a guarded helper
 (`_import_mace_conversion_deps()`) that raises a clear `pip install -e ".[mace]"` message instead of a raw
 `ModuleNotFoundError` if those aren't installed — so the console script exists for everyone but only
@@ -138,10 +140,10 @@ Previously, `numpy`, `matminer`, `scikit-learn`, `scipy`, `tqdm`, and `pyyaml` (
 imported by always-present modules (`analysis/`, `utilities/`, `structures/`) but missing from
 `pyproject.toml`'s `dependencies`. All six were added to core `dependencies` as part of the
 branching-dependencies rewrite (confirmed via a script that walks every `.py` file's imports in those
-directories, plus `potential/reaxff`, `potential/mace`, and `molecular_dynamics/{ase,lammps,torchsim}`, and diffs against
+directories, plus `potential/mace` and `molecular_dynamics/{ase,lammps,torchsim}`, and diffs against
 the declared dependencies/extras). `torch`/`e3nn`/`mace` were also found in
-`utilities/create_lammps_models_cli.py`, but per the entry above, those are handled via a guarded import
-rather than added to core.
+`potential/mace/create_lammps_models_cli.py`, but per the entry above, those are handled via a guarded
+import rather than added to core.
 
 ## `MatEnsembleJob.sorting_function`/`generic_task_command` duplication — resolved
 
@@ -153,37 +155,33 @@ there was nothing left to dedup once those scripts' fate was settled.
 ## `build_full_runs`/`batch_by_parent` v1/v2 duplication — resolved
 
 `build_full_runs`/`batch_by_parent` are now `@abstractmethod`s on `MatEnsembleJob`, each concrete subclass
-providing its own implementation under that single name (no more `_v2` suffix): `MACEMatEnsemble` and
-`JaxReaxFFMatEnsemble` each carry their own copy of the old non-`_v2` (flat proximity-matched) logic,
-`MDMatEnsemble` (renamed from `LammpsMatEnsemble`, and generalized to cover ASE/TorchSim as well as LAMMPS)
-carries the old `_v2` (recipe-file cross-product) logic. `JaxReaxFFMatEnsemble` got a direct copy rather
-than a shared intermediate base class, given its likely eventual deprecation (see the entry below) — not
-worth a permanent shared-base fixture for two classes where one is expected to go away.
+providing its own implementation under that single name (no more `_v2` suffix): `FFMatEnsemble` (then
+`MACEMatEnsemble`; `JaxReaxFFMatEnsemble` also had its own copy before being removed, see below) carries
+the flat proximity-matched logic, `MDMatEnsemble` (renamed from `LammpsMatEnsemble`, and generalized to
+cover ASE/TorchSim as well as LAMMPS) carries the recipe-file cross-product logic.
 
 ## `MatEnsembleJob.run()`'s `SuperFluxManager`/`poolexecutor` call — resolved
 
 `run()`/`dry_run()` deleted outright rather than rebuilt against the current `Chore`/`FluxManager` API.
-Each backend now exposes a `run_individual(overrides)` static method (MACE: calls `mace.cli.run_train.run`
-directly; MD: dynamically imports the user-supplied driver script by path and dispatches to its named
-entry-point function) that a thin `@pipe.chore`-decorated wrapper function in the submission script calls —
-see `examples/Frontier/RMG_MACE_ASE/run_pipeline.py` for the working pattern. This
-is what made the three `*_matensemble_cli.py` scripts' fate need deciding — see the new entry below.
+Each backend now exposes a `run_individual(task_dict)` static method that dynamically imports a
+user-supplied driver script by path and dispatches to its named entry-point function, and a thin
+`@pipe.chore`-decorated wrapper function in the submission script calls it — see
+`examples/Frontier/RMG_MACE_ASE/run_pipeline.py` for the working pattern. (`FFMatEnsemble`'s
+`run_individual` used to call `mace.cli.run_train.run` directly instead of dispatching to a driver
+script — see the `FFMatEnsemble` entry below for why/how that changed.) This is what made the three
+`*_matensemble_cli.py` scripts' fate need deciding — see the new entry below.
 
-## Three `*_matensemble_cli.py` console scripts — deprecated, registrations removed, files not yet deleted
+## Two `*_matensemble_cli.py` console scripts — deprecated, registrations removed, files not yet deleted
 
-`potential/mace/mace_matensemble_cli.py`, `potential/reaxff/jaxreaxff_matensemble_cli.py`, and
-`molecular_dynamics/lammps/lammps_matensemble_cli.py` all depended solely on `MatEnsembleJob.run()` for
-execution, which no longer exists (see the entry above) — the intended replacement is the `Pipeline`/chore
-pattern now exercised by `examples/Frontier/RMG_MACE_ASE/run_pipeline.py`. Their `pyproject.toml`
-console-script registrations (`mace_matensemble`/`jaxreaxff_matensemble`/`lammps_matensemble`) have been
-removed; the files themselves are left in place, broken, pending deletion once real replacements exist for
-each: `lammps_matensemble_cli.py`'s useful bits are already superseded by
-`MDMatEnsemble.build_lists`/`run_individual`; `mace_matensemble_cli.py`'s by
-`MACEMatEnsemble.build_mace_dcts`/`run_individual`. `jaxreaxff_matensemble_cli.py` has not been exercised or
-tested at all this pass (JAX-ReaxFF was out of scope) — it's a deprecation candidate given JAX-ReaxFF's
-upstream-deprecated status, but there's a published paper tied to this workflow, and a dedicated Perlmutter
-container for a JAX-ReaxFF fitting workflow may be built before this script is retired. Evaluate in that
-context before deleting it outright.
+`potential/mace/mace_matensemble_cli.py` and `molecular_dynamics/lammps/lammps_matensemble_cli.py`
+(`jaxreaxff_matensemble_cli.py` was deleted along with the rest of `potential/reaxff/`, see above) both
+depended solely on `MatEnsembleJob.run()` for execution, which no longer exists (see the entry above) —
+the intended replacement is the `Pipeline`/chore pattern now exercised by
+`examples/Frontier/RMG_MACE_ASE/run_pipeline.py`. Their `pyproject.toml` console-script registrations
+(`mace_matensemble`/`lammps_matensemble`) have been removed; the files themselves are left in place,
+broken, pending deletion once real replacements exist for each: `lammps_matensemble_cli.py`'s useful bits
+are already superseded by `MDMatEnsemble.build_lists`/`run_individual`; `mace_matensemble_cli.py`'s by
+`FFMatEnsemble.build_ff_dcts`/`run_individual`.
 
 `cn_checker`/`copy_by_pattern`'s console-script registrations have also been removed for the same reason
 (unexercised by the current pipeline) — `cn_checker_cli.py`/`copy_by_pattern_cli.py` themselves are left in
@@ -193,17 +191,32 @@ place, unregistered, not deleted.
 
 `EnsembleFFFit/density_functional_theory/rmg/` currently carries RMG-specific logic directly in this
 package (calculator, input-file generation, processor-grid sizing, log parsing, etc.). Longer-term, this
-should move back into `pyRMG` as a proper standalone dependency, the way MACE/JAX-ReaxFF are handled via
-their own upstream packages, rather than living in-tree here. Not being done now — flagged for future
+should move back into `pyRMG` as a proper standalone dependency, the way MACE is handled via its own
+upstream package, rather than living in-tree here. Not being done now — flagged for future
 tracking only.
 
-## Create `FFMatEnsemble` to replace `MACEMatEnsemble` (future work, not current)
+## `FFMatEnsemble` replaces `MACEMatEnsemble` — resolved
 
-`MACEMatEnsemble` is currently MACE-specific, but most of its logic (fanning a run-path into per-seed
-fitting subdirectories, matching foundation models against training-input folders, dispatching fits) isn't
-inherently MACE-only. Create a generic `FFMatEnsemble` — structured like `DFTMatEnsemble`/`MDMatEnsemble`,
-i.e. shared/conserved logic with a thin per-backend layer — so the same force-field-fitting caller can wrap
-other MD codes' fitting workflows, not just MACE's. Not being done now — flagged for future tracking only.
+`MACEMatEnsemble` renamed to `FFMatEnsemble`; `build_mace_dcts` renamed to `build_ff_dcts` (logic
+unchanged in both cases -- both were already backend-agnostic, since neither hardcodes anything
+MACE-specific: the option keys they proximity-match on are entirely caller-supplied). The one genuinely
+MACE-specific piece was `run_individual`, which used to build a `mace` argparse `Namespace` and call
+`mace.cli.run_train.run(args)` directly, inline in `base.py` -- that logic moved essentially verbatim to
+`examples/Frontier/RMG_MACE_ASE/FF/mace_fit.py`'s `run_mace_fit(overrides)` entry point.
+`FFMatEnsemble.run_individual` is now a thin dispatcher identical in shape to
+`DFTMatEnsemble`/`MDMatEnsemble`'s: import the driver script named by `task_dict['ff_task']`, call the
+function named by `task_dict['entry_point']`. Porting to a different FF backend later means writing a new
+driver script with the same entry-point contract and pointing `ff_task` at it -- no `base.py` changes.
+
+Along with this, all three `MatEnsembleJob` subclasses were standardized on `MDMatEnsemble`'s convention
+for how a chore's driver-script path reaches `run_individual`: the `build_*_dcts`/`build_task_dicts` method
+takes the task-script path and entry-point name as explicit parameters and embeds them into every returned
+dict itself, rather than leaving the submission script to inject them afterward.
+`DFTMatEnsemble.build_dft_dcts` was retrofitted from `(self, check_files, finished_file=None)` to
+`(self, dft_task, check_files, entry_point, finished_file=None)` to match (the *content* of each built
+dict is unchanged either way -- this only moves where `dft_task`/`entry_point` get set, `run_individual`
+itself wasn't touched); `run_converge_dft_data` in `run_pipeline.py` lost its manual post-build injection
+loop accordingly. `FFMatEnsemble.build_ff_dcts` was designed with this shape from the start.
 
 ## `molecular_dynamics/pyMD/` reorganized into `{ase,lammps,torchsim}/` — resolved
 

@@ -46,11 +46,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-reaxff = [
-    "jax[cuda12]==0.4.35",
-    "frozendict",
-    "jaxreaxff @ git+https://github.com/Q-CAD/JAX-ReaxFF.git",
-]
 # mace-torch is installed from its PyPI release rather than a git ref to the main
 # branch, to avoid unexpected deviations between installs. The mace-freeze fork
 # (github.com/7radians/mace-freeze) is no longer needed -- the frozen-layer
@@ -103,10 +98,7 @@ generate_defects = "EnsembleFFFit.structures.defects.generate_defects_cli:main"
 generate_substitutions = "EnsembleFFFit.structures.substitutions.generate_substitutions_cli:main"
 generate_vdW_spacing = "EnsembleFFFit.structures.vdW_layers.generate_vdW_spacing_cli:main"
 
-# create_lammps_models is MACE-specific -- it belongs under potential/mace/ once
-# MACEMatEnsemble is generalized into FFMatEnsemble (see TODO.md), but is kept
-# registered here for now.
-create_lammps_models = "EnsembleFFFit.utilities.create_lammps_models_cli:main"
+create_lammps_models = "EnsembleFFFit.potential.mace.create_lammps_models_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["EnsembleFFFit*"]

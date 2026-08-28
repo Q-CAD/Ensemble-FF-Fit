@@ -114,7 +114,7 @@ class MDMatEnsemble(MatEnsembleJob):
     Supports MD-driven backends whose run construction needs a recipe file
     (e.g. LAMMPS `.in`/control files, or an ASE run config) cross-producted
     against structure files, distinct from a single flat check-file per run
-    (that's MACEMatEnsemble's shape) -- currently used for LAMMPS, ASE, and
+    (that's FFMatEnsemble's shape) -- currently used for LAMMPS, ASE, and
     (in principle) TorchSim MD drivers.
     """
 
@@ -476,7 +476,7 @@ class MDMatEnsemble(MatEnsembleJob):
         return entry_point(task_dict['ffield'], task_dict['structure'], task_dict['output'], in_file)
 
 
-class JaxReaxFFMatEnsemble(MatEnsembleJob):
+class FFMatEnsemble(MatEnsembleJob):
     def __init__(self, run_directory, inputs_directory, **kwargs):
         super().__init__(run_directory, inputs_directory, **kwargs)
 
@@ -588,127 +588,20 @@ class JaxReaxFFMatEnsemble(MatEnsembleJob):
 
         return batched_tasks, new_run_paths, run_paths
 
-
-class MACEMatEnsemble(MatEnsembleJob):
-    def __init__(self, run_directory, inputs_directory, **kwargs):
-        super().__init__(run_directory, inputs_directory, **kwargs)
-
-    def build_full_runs(self, root0: str, files0: list[str],
-                        root1: str, files1: list[str],
-                        labels: list[str], ordered_labels: list[str],
-                        finished_file: str | None = None):
+    def build_ff_dcts(self, ff_task, check_files, entry_point, finished_file=None):
         """
-        Cross-product every proximity-matched combo from root0/files0 with every
-        proximity-matched combo from root1/files1 (minus any combo whose derived
-        task_dir already contains a `finished_file` match), and derive a run/task
-        directory for each surviving combo.
-
-        Returns (reordered_combos, task_dirs): reordered_combos is a list of path
-        lists ordered per `ordered_labels`, and task_dirs is the parallel list of
-        derived task directories.
-        """
-        combos0 = self._make_proximity_combinations(root0, files0)
-        combos1 = self._make_proximity_combinations(root1, files1)
-
-        combos_both, task_dirs = [], []
-        for combo0 in combos0:
-            for combo1 in combos1:
-
-                # Solve for the run directory
-                sec_parts = {f: f.split(os.sep) for f in combo1}
-                longest_file = max(sec_parts, key=lambda f: len(sec_parts[f]))
-                lp = sec_parts[longest_file]
-                p0 = combo0[0].split(os.sep)
-                c = self._common_prefix(p0, lp)
-
-                # Divergent tail from the long path
-                tail = lp[c+1:-1] # ignore root1 and base filename
-                parent0 = os.path.dirname(combo0[0])
-                task_dir = os.path.join(parent0, *tail)
-
-                # Check existence of finished_file in task_dir
-                combo_both = combo0 + combo1
-                if os.path.isdir(task_dir) and finished_file is not None:
-                    pattern = os.path.join(task_dir, finished_file)
-                    if glob.glob(pattern):
-                        continue # finished_file pattern already written
-
-                task_dirs.append(task_dir)
-                combos_both.append(combo_both)
-
-        reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
-
-        return reordered_combos_both, task_dirs
-
-    def batch_by_parent(self, tasks, run_paths, labels, parent_levels=1):
-        """
-        Given tasks = [(ffield1, struct_path1), (ffield2, struct_path2), …],
-        group them by the parent directory of each run_path defined by parent_levels.
-
-        Returns: [
-            [[structA, structB, …], [ffieldA, ffieldB, …]],
-            [[structC, structD, …], [ffieldC, ffieldD, …]],
-            …
-        ]
-        (Illustrative only — the actual per-group ordering of inner lists follows
-        the caller-supplied `labels` list, not a fixed struct/ffield order.)
-        """
-        def get_parent(path, parent_levels):
-            p = Path(path)
-            for _ in range(parent_levels):
-                p = p.parent
-            return p
-
-        def merge_child_paths(dct):
-            out = {}
-
-            # Sort so parents come before children
-            for path in sorted(dct, key=lambda p: Path(p).parts):
-                path_obj = Path(path)
-                parent = next((p for p in out if path_obj.is_relative_to(p)), None)
-
-                if parent:
-                    # Merge into parent
-                    for k, v in dct[path].items():
-                        out[parent].setdefault(k, []).extend(v)
-                else:
-                    # Copy new parent entry
-                    out[path] = {k: list(v) for k, v in dct[path].items()}
-
-            return out
-
-        groups = defaultdict(lambda: {label: [] for label in labels + ['run_path']})
-
-        # Group the tasks by parent directory
-        for i, run_path in enumerate(run_paths):
-            parent = get_parent(run_path, parent_levels)
-            for j, label in enumerate(labels):
-                groups[parent][label].append(tasks[i][j])
-            groups[parent]['run_path'].append(run_paths[i])
-
-        # Merge the parent directories by super-parents
-        groups_merged = merge_child_paths(groups)
-
-        # Build the final output in arbitrary parent‐directory order:
-        batched_tasks = []
-        new_run_paths = []
-        for parent, contents in groups_merged.items():
-            use_batch = []
-            for label in labels + ['run_path']: # Add run path to arguments here
-                use_batch.append(contents[label])
-            batched_tasks.append(use_batch)
-            new_run_paths.append(parent)
-
-        return batched_tasks, new_run_paths, run_paths
-
-    def build_mace_dcts(self, check_files, finished_file=None):
-        """
-        Build the list of per-run MACE override dicts (foundation_model/config/
-        train_file/test_file plus results_dir/work_dir/name) needed to submit
-        one chore per fit, using `self.run_directory`/`self.inputs_directory`/
-        `self.options` (set by `__init__`). `finished_file` (a glob pattern,
-        e.g. "MACE_*.model") skips any run whose task_dir already contains a
-        match -- see `build_full_runs`.
+        Build the list of per-run FF-fitting override dicts (whatever
+        backend-specific option keys the caller passed to `__init__` --
+        e.g. foundation_model/config/train_file/test_file for MACE -- plus
+        results_dir/work_dir/name/ff_task/entry_point) needed to submit one
+        chore per fit, using `self.run_directory`/`self.inputs_directory`/
+        `self.options` (set by `__init__`). `ff_task`/`entry_point` name the
+        backend-specific driver script and its entry-point function --
+        embedded into every returned dict here (not left for the caller to
+        inject afterward), matching `MDMatEnsemble.build_task_dicts`'s
+        convention rather than `DFTMatEnsemble`'s old one. `finished_file`
+        (a glob pattern, e.g. "MACE_*.model") skips any run whose task_dir
+        already contains a match -- see `build_full_runs`.
         """
         inputs_directory_keys = [key for key in self.options.keys() if key not in check_files]
         labels = check_files + inputs_directory_keys
@@ -720,57 +613,31 @@ class MACEMatEnsemble(MatEnsembleJob):
         )
 
         task_arg_dct_list = [dict(zip(labels, task_arg)) for task_arg in task_arg_list]
-        run_path_arg_list = [{'results_dir': run_path, 'work_dir': run_path, 'name': f'MACE_{str(i)}'} for i, run_path in enumerate(run_paths)]
-        mace_arg_dct_list = [{**task_dct, **run_dct} for task_dct, run_dct in zip(task_arg_dct_list, run_path_arg_list, strict=True)]
+        run_path_arg_list = [{'results_dir': run_path, 'work_dir': run_path, 'name': f'FF_{str(i)}',
+                               'ff_task': ff_task, 'entry_point': entry_point}
+                              for i, run_path in enumerate(run_paths)]
+        ff_arg_dct_list = [{**task_dct, **run_dct} for task_dct, run_dct in zip(task_arg_dct_list, run_path_arg_list, strict=True)]
 
-        return mace_arg_dct_list
+        return ff_arg_dct_list
 
     @staticmethod
-    def run_individual(overrides):
+    def run_individual(task_dict):
         """
-        Run a single MACE fit from a per-run `overrides` dict (foundation_model/
-        config/train_file/test_file/results_dir/work_dir/name/...). Imports
-        `mace` lazily -- this method is the only thing in this module that
-        needs the `mace` extra installed, so importing EnsembleFFFit.base
-        itself doesn't require it.
+        Import the user-supplied FF-fitting driver script (`task_dict['ff_task']`)
+        by path and dispatch to its entry-point function (named by
+        `task_dict['entry_point']`) -- same dynamic-import-and-dispatch
+        mechanism as MDMatEnsemble.run_individual/DFTMatEnsemble.run_individual.
+        The entry point receives the remaining override dict (foundation_model/
+        config/train_file/test_file/results_dir/work_dir/name/... for MACE,
+        or whatever a different backend's driver needs) as a single argument --
+        unlike MD/DFT's positional-list convention, an FF fit is already
+        one-per-chore, so there's nothing to batch/unpack here.
         """
-        from mace.cli.run_train import run
-        from mace.tools import build_default_arg_parser
-
-        name = overrides.get("name", "MatEnsemble")
-        config_path = overrides.get("config")
-
-        initial_args = ["--name", name]
-        if config_path:
-            initial_args += ["--config", config_path]
-
-        args = build_default_arg_parser().parse_args(initial_args)
-
-        for key, value in overrides.items():
-            if key in ("name", "config", "finished_file"):
-                continue  # already handled above / below
-            setattr(args, key, value)
-
-        work_path = overrides.get("work_dir")
-        if work_path:
-            os.makedirs(work_path, exist_ok=True)
-
-        # `finished_file` here is deliberately an execution-time skip, not a
-        # build-time filter (contrast build_mace_dcts's own finished_file
-        # param) -- a caller relying on this chore's *completion* to trigger
-        # further work (e.g. a Pipeline.strategy processing chore) needs the
-        # chore to still run and succeed even when the fit itself was already
-        # done, rather than never being submitted at all.
-        finished_file = overrides.get("finished_file")
-        already_done = bool(finished_file and work_path and glob.glob(os.path.join(work_path, finished_file)))
-        if not already_done:
-            run(args)
-
-        # results_dir/name are included (not just status) so callers watching
-        # this chore's completion (e.g. a Pipeline.strategy processing chore)
-        # can locate the fitted model file directly, without re-walking the
-        # run_directory -- MACE writes it to f"{results_dir}/{name}.model".
-        return {"status": "complete", "results_dir": overrides.get("results_dir"), "name": name}
+        module_name = Path(task_dict['ff_task']).stem
+        driver = import_module_from_path(module_name, task_dict['ff_task'])
+        entry_point = getattr(driver, task_dict['entry_point'])
+        overrides = {k: v for k, v in task_dict.items() if k not in ('ff_task', 'entry_point')}
+        return entry_point(overrides)
 
 
 class DFTMatEnsemble(MatEnsembleJob):
@@ -778,10 +645,10 @@ class DFTMatEnsemble(MatEnsembleJob):
     Supports DFT backends (currently just RMG) whose run construction needs a
     recipe file (an RMG input YAML) cross-producted against structure files
     (POSCAR/CONTCAR) -- the same recipe/structure-cross-product shape as
-    MDMatEnsemble, reused here rather than inherited from it since every other
-    concrete backend in this module (JaxReaxFFMatEnsemble/MACEMatEnsemble)
-    already duplicates its build_full_runs/batch_by_parent rather than
-    sharing a common non-abstract base for them.
+    MDMatEnsemble, reused here rather than inherited from it since the other
+    concrete backend in this module (FFMatEnsemble) already duplicates its
+    build_full_runs/batch_by_parent rather than sharing a common non-abstract
+    base for them.
     """
 
     def __init__(self, run_directory, inputs_directory, **kwargs):
@@ -937,13 +804,18 @@ class DFTMatEnsemble(MatEnsembleJob):
 
         return batched_tasks, new_run_paths, run_paths
 
-    def build_dft_dcts(self, check_files, finished_file=None):
+    def build_dft_dcts(self, dft_task, check_files, entry_point, finished_file=None):
         """
         Build the list of per-run DFT override dicts needed to submit one
         chore per RMG calculation, using `self.run_directory`/
         `self.inputs_directory`/`self.options` (set by `__init__`).
-        `finished_file` (a glob pattern, e.g. "forcefield.xml") skips any run
-        whose task_dir already contains a match -- see `build_full_runs`.
+        `dft_task`/`entry_point` name the DFT driver script and its
+        entry-point function -- embedded into every returned dict here (not
+        left for the caller to inject afterward), matching
+        `MDMatEnsemble.build_task_dicts`/`FFMatEnsemble.build_ff_dcts`'s
+        convention. `finished_file` (a glob pattern, e.g. "forcefield.xml")
+        skips any run whose task_dir already contains a match -- see
+        `build_full_runs`.
 
         Deliberately deals only in file paths, never a resolved Structure/
         Atoms object: the structure this dict points at (via whichever
@@ -1043,6 +915,8 @@ class DFTMatEnsemble(MatEnsembleJob):
                 'electrons_per_gpu': electrons_per_gpu,
                 'grid_divisibility_exponent': grid_divisibility_exponent,
                 'allocated_nodes': allocated_nodes,
+                'dft_task': dft_task,
+                'entry_point': entry_point,
             })
 
         return dft_dct_list
