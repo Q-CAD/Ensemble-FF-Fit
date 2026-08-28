@@ -122,11 +122,16 @@ or consumes its outputs. Both live at the top of the `EnsembleFFFit` package (no
 **Why the three subclasses' input-passing conventions deliberately differ, not just historically drifted
 apart** — each one's rigidity (or lack of it) tracks how much variation is actually expected across real
 backends for that concern:
-  - `DFTMatEnsemble.options` is fixed to exactly `rmg_yaml` + `structure_filename`, full stop — DFT codes
-    overwhelmingly share the same "structure file + recipe/config file" input shape (pymatgen/ASE can
-    generate valid inputs for most DFT codes from exactly that pair), and RMG is the only DFT backend
-    expected here for the foreseeable future. There's little to gain from making this backend-agnostic,
-    so it isn't.
+  - `DFTMatEnsemble.options` is fixed to exactly `rmg_yaml` + `structure_filename`, full stop — but unlike
+    `MDMatEnsemble`'s fixed shape below, this isn't because only one DFT backend is expected: VASP,
+    Quantum Espresso, and possibly Gaussian (for molecular systems) are all planned. It's fixed because
+    "structure file + recipe/config file" is expected to keep working as a generic contract *across* those
+    codes — pymatgen/ASE already have solid input-generation support for VASP/QE/Gaussian-like codes, so
+    a structure+config pair should suffice for each without `DFTMatEnsemble` itself needing to change.
+    RMG is the outlier here, not the norm: it's obscure enough that it needed genuinely bespoke, hand-written
+    support (`density_functional_theory/rmg/`) rather than leaning on existing Python DFT tooling the way
+    VASP/QE/Gaussian are expected to. If a future DFT code turns out *not* to fit the structure+config
+    shape, that's the point to revisit whether this class needs to generalize — not before.
   - `MDMatEnsemble.options` is backend-dependent (`ffield`/`in_file`/`control`/`structure` for LAMMPS, a
     different set for ASE/TorchSim) but still funnels into the same small, *fixed* positional shape at the
     `run_individual`/driver-script boundary (`ffield`, `structure`, `output`, `in_file` — four slots, always

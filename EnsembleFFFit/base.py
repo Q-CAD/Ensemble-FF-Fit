@@ -489,10 +489,13 @@ class FFMatEnsemble(MatEnsembleJob):
     MatEnsembleJob subclasses -- an intentional divergence, not drift to
     reconcile:
     - DFTMatEnsemble.options is fixed to exactly 'rmg_yaml' +
-      'structure_filename'. DFT codes overwhelmingly share that same
-      structure+recipe input shape (pymatgen/ASE can generate inputs for
-      most DFT codes from it), and RMG is the only DFT backend expected for
-      the foreseeable future, so there's little value in generalizing this.
+      'structure_filename' -- not because RMG is the only DFT backend
+      expected (VASP/Quantum Espresso/possibly Gaussian are all planned),
+      but because structure+recipe is expected to keep working as a generic
+      contract across those codes, which pymatgen/ASE already have solid
+      input-generation support for. RMG is the outlier that needed bespoke,
+      hand-written support (density_functional_theory/rmg/) specifically
+      because it's obscure enough to lack that kind of Python tooling.
     - MDMatEnsemble.options is backend-dependent but still funnels into a
       small, fixed positional shape at the driver-script boundary
       (ffield/structure/output/in_file) -- the set of MD drivers expected
