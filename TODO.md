@@ -25,34 +25,6 @@ pull the relevant logic back from the `main`/`Claude` branches (where it still e
 reconstructing it from memory, and give it its own driver script under the `FFMatEnsemble` pattern rather
 than reviving `JaxReaxFFMatEnsemble`/`MatEnsembleJob.run()`.
 
-## LAMMPS batching per-batch task count
-
-`EnsembleFFFit/molecular_dynamics/lammps/lammps_matensemble_cli.py`'s `run_lammps` sizes each batch's task
-count using only the first structure in that batch. Acceptable today because batching is typically used
-for single-point runs where 1 GPU suffices regardless of atom count, but would undercount if batches ever
-mix structures of meaningfully different sizes. Revisit if that usage pattern changes.
-
-## `deviation_selection_cli.py` known limitations (left unfixed)
-
-- `get_structures_scores`: keys per-image data by `image_key` alone across *all* MD trajectories — if two
-  different trajectories reuse the same image index, their energies/forces will be silently merged.
-- `rank_structures`: the `while True` loop stops at the first `IndexError` from `parse_single_points`,
-  which fires as soon as **any one** trajectory in the tree is exhausted, not per-trajectory — frames from
-  longer trajectories past that point are silently dropped.
-
-Both were explicitly left as-is (not fixed) per a repo-author decision — this script was written as an
-exploratory active-learning/UQ tool and may need a more thorough rework rather than a targeted patch.
-
-## `get_reference_per_atom` single-force-field assumption
-
-`EnsembleFFFit/utilities/cluster_lammps_runs.py` and `EnsembleFFFit/utilities/formation_energy_lammps_runs.py`
-both have a `get_reference_per_atom` that assumes a single force field is being processed at a time (e.g.
-one MACE variant); the dict structure supports multiple force-field keys, but per-element reference
-energies are overwritten (not accumulated as a running minimum) across force fields if more than one is
-ever passed in. Left as-is per the repo author's confirmation this was written for single-ffield use.
-Related: both files' `parse_single_points`-adjacent code has hardcoded `ffield_labels`/`dump_index`
-assumptions that would need generalizing alongside any multi-ffield fix.
-
 ## `CLAUDE.md` Architecture section staleness — resolved
 
 `CLAUDE.md`'s Architecture section (and the Install section) have been rewritten to describe the current
@@ -149,8 +121,8 @@ import rather than added to core.
 
 Both deleted outright, along with `get_tasks`, `dict_to_argv`/`dict_to_str_list`, `to_str_list`,
 `construct_tasks`, `read_structure_from_lammps`, `get_python`, and `modify_write_paths` — confirmed unused
-by anything outside the three now-deprecated `*_matensemble_cli.py` scripts (see the new entry below), so
-there was nothing left to dedup once those scripts' fate was settled.
+by anything outside the `*_matensemble_cli.py` scripts (see the new entry below; all three have since been
+deleted outright), so there was nothing left to dedup once those scripts' fate was settled.
 
 ## `build_full_runs`/`batch_by_parent` v1/v2 duplication — resolved
 
@@ -171,21 +143,28 @@ user-supplied driver script by path and dispatches to its named entry-point func
 script — see the `FFMatEnsemble` entry below for why/how that changed.) This is what made the three
 `*_matensemble_cli.py` scripts' fate need deciding — see the new entry below.
 
-## Two `*_matensemble_cli.py` console scripts — deprecated, registrations removed, files not yet deleted
+## Unused/deprecated console scripts deleted from this branch — resolved
 
 `potential/mace/mace_matensemble_cli.py` and `molecular_dynamics/lammps/lammps_matensemble_cli.py`
-(`jaxreaxff_matensemble_cli.py` was deleted along with the rest of `potential/reaxff/`, see above) both
-depended solely on `MatEnsembleJob.run()` for execution, which no longer exists (see the entry above) —
-the intended replacement is the `Pipeline`/chore pattern now exercised by
-`examples/Frontier/RMG_MACE_ASE/run_pipeline.py`. Their `pyproject.toml` console-script registrations
-(`mace_matensemble`/`lammps_matensemble`) have been removed; the files themselves are left in place,
-broken, pending deletion once real replacements exist for each: `lammps_matensemble_cli.py`'s useful bits
-are already superseded by `MDMatEnsemble.build_lists`/`run_individual`; `mace_matensemble_cli.py`'s by
-`FFMatEnsemble.build_ff_dcts`/`run_individual`.
+(`jaxreaxff_matensemble_cli.py` was deleted earlier along with the rest of `potential/reaxff/`, see above)
+both depended solely on `MatEnsembleJob.run()` for execution, which no longer exists (see the entry
+above) — real replacements already exist for each (`lammps_matensemble_cli.py`'s useful bits are
+superseded by `MDMatEnsemble.build_lists`/`run_individual`; `mace_matensemble_cli.py`'s by
+`FFMatEnsemble.build_ff_dcts`/`run_individual`, exercised by `examples/Frontier/RMG_MACE_ASE/run_pipeline.py`),
+so rather than leaving them in place broken, both were deleted outright.
 
-`cn_checker`/`copy_by_pattern`'s console-script registrations have also been removed for the same reason
-(unexercised by the current pipeline) — `cn_checker_cli.py`/`copy_by_pattern_cli.py` themselves are left in
-place, unregistered, not deleted.
+Also deleted, all confirmed to have zero callers anywhere in this repo and no `pyproject.toml`
+registration (verified via a repo-wide import search before deleting anything, same discipline as the
+`pyMD/`/`potential/reaxff/` removals above): `structures/deviation_selection/` (`deviation_selection_cli.py`
+-- its role in the current pipeline is filled by `analysis/variance.py`/`select_dft_candidates` instead),
+`utilities/cn_checker_cli.py` (actually lived in `analysis/`), `utilities/parse_vasp_aimd_cli.py`,
+`utilities/cluster_lammps_runs.py`, `utilities/formation_energy_lammps_runs.py`, and
+`utilities/copy_by_pattern_cli.py` -- the latter's one genuinely reusable piece,
+`get_atom_mapping_from_control` (LAMMPS dump-file element mapping), was merged into
+`molecular_dynamics/lammps/lammps_properties.py` first (also moved there from `analysis/`, its only other
+real consumer, since it's LAMMPS-specific) rather than lost. All of the above are still recoverable from
+the `main`/`Claude` branches if any of it turns out to be needed as reference when incorporating another
+backend later.
 
 ## Move RMG logic back into pyRMG (future work, not current)
 
@@ -224,9 +203,9 @@ loop accordingly. `FFMatEnsemble.build_ff_dcts` was designed with this shape fro
 convention. The intermediate `pyMD/` folder (a LAMMPS-flavored name nesting even the non-LAMMPS backends)
 is gone entirely; `helpers.py` moved to `molecular_dynamics/helpers.py` (shared across backends), and each
 driver moved into its backend's own folder: `ase/ase_mace.py`, `lammps/lammps_reaxff_cpu.py`,
-`lammps/lammps_mace_kokkos_gpu.py`, `lammps/lammps_matensemble_cli.py` (still deprecated, see the entry
-above — moving it didn't fix its already-broken `LammpsMatEnsemble` import, since that class was renamed to
-`MDMatEnsemble`), `torchsim/torch_sim_mace.py`. `pyMD/examples/` (worked ReaxFF/LAMMPS, MACE/LAMMPS-Kokkos,
+`lammps/lammps_mace_kokkos_gpu.py`, `torchsim/torch_sim_mace.py` (`lammps/lammps_matensemble_cli.py` also
+moved here at the time, but has since been deleted outright, see the entry above). `pyMD/examples/` (worked
+ReaxFF/LAMMPS, MACE/LAMMPS-Kokkos,
 and MACE/ASE example datasets — POSCARs, LAMMPS data files, submit scripts, two model checkpoints) was
 deleted outright rather than migrated — confirmed orphaned (nothing referenced it) and fully superseded by
 `examples/Frontier/RMG_MACE_ASE/`; recoverable from git history if ever needed. Confirmed via a full

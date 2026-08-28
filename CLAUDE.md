@@ -150,12 +150,18 @@ generic by-path loader, not a `pyMD` import).
   `Pipeline`/chore pattern and haven't been exercised against it — likely stale relative to what
   `examples/Frontier/RMG_MACE_ASE/MD/*/ase_inputs/*.py` now demonstrates working; flagged for review, not
   removed.
-- **`lammps/lammps_matensemble_cli.py`** and **`potential/mace/mace_matensemble_cli.py`** are deprecated,
-  not-yet-deleted console scripts (their `pyproject.toml` registrations have already been removed) — both
-  depended on `MatEnsembleJob.run()`, which no longer exists, and both now have additionally broken imports
-  from the renames above (`from EnsembleFFFit.base import LammpsMatEnsemble` → `MDMatEnsemble`;
-  `MACEMatEnsemble` → `FFMatEnsemble`). The current pattern is the `Pipeline`/`@pipe.chore` one described
-  above; see `TODO.md` for what still needs to happen before these files are deleted.
+- `lammps/lammps_matensemble_cli.py` and `potential/mace/mace_matensemble_cli.py` (the deprecated,
+  `MatEnsembleJob.run()`-dependent console scripts described in earlier revisions of this doc) have been
+  deleted outright, along with every other console script that had no callers anywhere in this repo and no
+  `pyproject.toml` registration left (see `TODO.md` for the full list and reasoning) — confirmed via a
+  repo-wide import search before deleting anything, same as the `pyMD/` reorganization above. Still
+  recoverable from the `main`/`Claude` branches if any of it turns out to be needed as reference later.
+- `lammps/lammps_properties.py` (moved here from `analysis/`, since it's LAMMPS-specific) parses LAMMPS
+  dump/log output into structures/single-point data (`get_atoms`, `parse_single_points`, `write_poscars`)
+  and, merged in from the now-deleted `copy_by_pattern_cli.py` (its only real consumer),
+  `get_atom_mapping_from_control` (maps LAMMPS dump placeholder elements back to real elements via a
+  `pair_coeff`-parsed `.in.lammps` file) — genuinely reusable LAMMPS dump→POSCAR conversion capability, kept
+  even though nothing in the current pipeline calls it yet.
 - `potential/mace/build_ensemble_inputs.py`/`write_training_xyz.py` are the current, actively-used MACE
   training-input builders. `potential/mace/create_lammps_models_cli.py` (moved from `utilities/`, since
   it's MACE-specific) needs the `mace` extra despite being a core-registered console script; see `TODO.md`.
@@ -167,32 +173,29 @@ Each subfolder walks a tree of POSCARs and writes new structure variants:
 `equation_of_state/` (volume-rescaled EoS points), `materials_project/` (`mp_query`, pulls structures
 from the Materials Project API by mpid/chemsys), `substitutions/` (ionic-radius-guided element
 substitution + volume prediction), `vdW_layers/` (interlayer-spacing sampling for vdW heterostructures,
-depends on the external `HeteroBuilder`/`vdW_structures` package), `deviation_selection/` (UQ-driven:
-consumes parsed ensemble single-point data, computes per-site energy/force variance across force fields,
-writes out the highest/lowest-variance structures as the next round's training candidates — has known
-limitations, see `TODO.md`).
+depends on the external `HeteroBuilder`/`vdW_structures` package). `deviation_selection/` (a UQ-driven
+structure-downselection tool) has been deleted — unreferenced anywhere, its role in the current pipeline is
+filled by `analysis/variance.py`/`select_dft_candidates` instead; recoverable from `main`/`Claude` if
+needed.
 
 ### `analysis/` — ensemble scoring / best-FF selection
 
-Pipeline: `dict_parsers.py` (generic ASE/VASP single-point ingestion) and `lammps_properties.py`
-(`parse_single_points`, LAMMPS-specific ingestion into the same nested `{label: {run: {image: {...}}}}`
-shape) parse raw run output → `variance.py` (`get_structures_scores`) scores *ensemble disagreement* per
-MD image, driving which new structures get added to training → `best_force_field.py`
-(`get_ff_deviations`/`rank_ff_scores`) scores each ensemble member's RMSE against DFT ground truth,
-driving which force field is "best" → `downselect_force_fields.py` copies the top-ranked force fields
-forward into the next stage. `cn_checker_cli.py` is an independent structural-QC tool (coordination-number
-deviation via `pymatgen`'s `CrystalNN`), orthogonal to the energy/force analysis chain above — its
-`pyproject.toml` console-script registration has been removed (deprecated CLI surface, not deleted).
+Pipeline: `dict_parsers.py` (generic ASE/VASP single-point ingestion) parses raw run output →
+`variance.py` (`get_structures_scores`) scores *ensemble disagreement* per MD image, driving which new
+structures get added to training → `best_force_field.py` (`get_ff_deviations`/`rank_ff_scores`) scores
+each ensemble member's RMSE against DFT ground truth, driving which force field is "best" →
+`downselect_force_fields.py` copies the top-ranked force fields forward into the next stage.
+(`lammps_properties.py`'s LAMMPS-specific ingestion moved to `molecular_dynamics/lammps/`, see above;
+`cn_checker_cli.py`, an independent structural-QC tool, has been deleted — unreferenced anywhere.)
 
 ### `utilities/` — misc CLIs and structure deduplication
 
-`formation_energy_lammps_runs.py`/`parse_vasp_aimd_cli.py` are standalone helper CLIs (`create_lammps_models_cli.py`
-used to live here too — moved to `potential/mace/`, see above). `copy_by_pattern_cli.py`'s console-script
-registration has been removed (same as `cn_checker_cli.py` above) — the file remains, unregistered.
-`cluster_lammps_runs.py` featurizes structures with matminer's `CrystalNNFingerprint`, builds a pairwise
-dissimilarity matrix, and hierarchically clusters to pick representative structures per formula/cluster
-(reduces redundant training data) — it's the one module here that's part of the generate→analyze pipeline
-rather than a standalone tool.
+`create_lammps_models_cli.py` used to live here too — moved to `potential/mace/`, see above.
+`copy_by_pattern_cli.py`, `cluster_lammps_runs.py`, `formation_energy_lammps_runs.py`, and
+`parse_vasp_aimd_cli.py` have all been deleted — none were used anywhere in the current pipeline
+(`copy_by_pattern_cli.py`'s one genuinely useful piece, `get_atom_mapping_from_control`, was merged into
+`molecular_dynamics/lammps/lammps_properties.py` first, see above, rather than lost). All recoverable from
+`main`/`Claude` if needed as reference for a future backend.
 
 ### `examples/`
 

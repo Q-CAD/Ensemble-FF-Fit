@@ -5,12 +5,38 @@ from pathlib import Path
 from parse2fit.tools.unitconverter import UnitConverter
 from pymatgen.io.lammps.outputs import parse_lammps_dumps
 from pymatgen.io.lammps.outputs import parse_lammps_log
+from pymatgen.io.lammps.inputs import LammpsInputFile
 from pymatgen.io.vasp.outputs import Vasprun
 from pymatgen.io.ase import AseAtomsAdaptor
+from pymatgen.core.periodic_table import Element
 from ase.io import read
-from EnsembleFFFit.utilities.copy_by_pattern_cli import get_atom_mapping_from_control
 import numpy as np
 from copy import deepcopy
+
+
+def get_atom_mapping_from_control(path):
+    """
+    Parse a LAMMPS input file for its `pair_coeff` commands and build a mapping
+    from placeholder elements (ordered by atomic number, matching how ASE assigns
+    generic elements to LAMMPS atom types when reading dump files) to the real
+    elements named in the input file, in atom-type order. (Moved here from the
+    now-deleted utilities/copy_by_pattern_cli.py -- this was its only real
+    consumer.)
+    """
+    lif = LammpsInputFile.from_file(path)
+    pair_coeff_lists = [line for line in lif.as_dict()['stages'][0]['commands'] if 'pair_coeff' in line]
+
+    elements = []
+    for pair_coeff_list in pair_coeff_lists:
+        for split in pair_coeff_list[-1].split():
+            try:
+                el = Element(split)
+                elements.append(str(el))
+            except:
+                pass
+    mapping = {str(Element.from_Z(i+1)): str(elements[i]) for i in range(len(elements))}
+
+    return mapping
 
 
 def nested_set(dct, keys, value):
