@@ -6,10 +6,24 @@ task_dict['entry_point'] -- same convention as DFT/rmg_dft.py and
 MD/*/ase_inputs/ase_mace*.py, kept in the example rather than the installed
 package since it's a site-specific driver, not portable package logic.
 
-Unlike those two (which take parallel lists of per-structure inputs),
-run_mace_fit takes a single `overrides` dict -- an FF fit is already
-one-per-chore (FFMatEnsemble.build_ff_dcts never batches multiple fits into
-one task_dict), so there's nothing to unpack/batch here.
+Unlike those two (which take parallel lists of per-structure inputs, a
+convention baked into DFTMatEnsemble/MDMatEnsemble's own run_individual
+because RMG/MD each have a small, fixed number of positional slots --
+working_directory+rmg_yaml, or ffield+structure+output+in_file -- that those
+two backend-specific classes are allowed to know about), run_mace_fit takes
+a single `overrides` dict instead. FFMatEnsemble.run_individual is
+deliberately backend-agnostic (see EnsembleFFFit/base.py) -- it has no fixed
+set of key names to unpack into positional lists the way DFT/MD's
+run_individual does, since a different FF backend's overrides could
+legitimately use different keys. An FF fit is also already one-per-chore
+(FFMatEnsemble.build_ff_dcts never batches multiple fits into one
+task_dict), so there's nothing to batch here either way.
+
+Still runnable standalone for manual testing, same as rmg_dft.py/
+ase_mace_md.py -- just via a single JSON *dict* argument (parsed with
+json.loads) instead of parse_list's JSON *list* argument, matching this
+script's actual per-fit shape:
+`python mace_fit.py '{"foundation_model": "...", "config": "...", "train_file": "...", "test_file": "...", "results_dir": "...", "work_dir": "...", "name": "FF_0"}'`
 
 All the actual MACE-fitting logic below (building a mace argparse Namespace,
 the finished_file execution-time skip, the results_dir/name return shape)
@@ -20,6 +34,8 @@ same run_<backend>_fit(overrides) entry-point contract, not touching
 EnsembleFFFit/base.py at all.
 """
 import os
+import sys
+import json
 import glob
 
 
@@ -68,3 +84,7 @@ def run_mace_fit(overrides):
     # can locate the fitted model file directly, without re-walking the
     # run_directory -- MACE writes it to f"{results_dir}/{name}.model".
     return {"status": "complete", "results_dir": overrides.get("results_dir"), "name": name}
+
+
+if __name__ == "__main__":
+    run_mace_fit(json.loads(sys.argv[1]))
