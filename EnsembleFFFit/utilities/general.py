@@ -84,6 +84,84 @@ def import_module_from_path(module_name, path):
     spec.loader.exec_module(module)
     return module
 
+def mirror_completed_leaves(source_root, dest_root, filenames):
+    """
+    For every leaf directory under source_root containing ALL of
+    `filenames`, copy each into the mirrored location under dest_root --
+    e.g. mirroring completed DFT validation results (POSCAR +
+    properties.json) into an MD stage's inputs_directory so its single
+    points have a ground-truth pair to compare against. Skips any leaf
+    missing even one of `filenames` (a run that hasn't converged/finished
+    yet). Returns the list of source leaf directories actually copied.
+    """
+    dest_path_fns = {name: make_mirrored_rename_dest_path_fn(source_root, dest_root, name) for name in filenames}
+
+    copied = []
+    for dirpath, _, files in os.walk(source_root):
+        if not all(name in files for name in filenames):
+            continue
+        for name in filenames:
+            src = Path(dirpath) / name
+            dst = dest_path_fns[name](src, None)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        copied.append(dirpath)
+
+    return copied
+
+
+def unpack_trajectory_frames(source_root, dest_root, traj_filename="md_run.traj"):
+    """
+    For every `traj_filename` found under source_root (e.g. finite-
+    temperature MD trajectories), write each of its frames as
+    dest_root/<relpath-of-run>/<frame_index>/POSCAR -- one subtree per run,
+    each run's own frames numbered 0..N-1, matching the (md_name, md_image)
+    convention EnsembleFFFit.analysis.dict_parsers/variance expect. Returns
+    (num_runs, num_frames_written). Imports ase.io lazily so importing this
+    module doesn't require ase to be installed for callers that never use
+    this function.
+    """
+    from ase.io import read, write
+
+    num_runs = 0
+    num_frames = 0
+
+    for dirpath, _, files in os.walk(source_root):
+        if traj_filename not in files:
+            continue
+
+        rel_run = os.path.relpath(dirpath, source_root)
+        frames = read(os.path.join(dirpath, traj_filename), index=":")
+
+        for i, atoms in enumerate(frames):
+            out_dir = os.path.join(dest_root, rel_run, str(i))
+            os.makedirs(out_dir, exist_ok=True)
+            write(os.path.join(out_dir, "POSCAR"), atoms)
+            num_frames += 1
+
+        num_runs += 1
+
+    return num_runs, num_frames
+
+
+def print_and_write(lines, path, header=""):
+    """
+    Print `lines` (already-formatted strings) joined by newlines, and write
+    the same text to `path` (creating parent directories as needed) --
+    keeps a script's stdout output and its on-disk record (e.g. a ranking
+    or selection manifest) identical by construction rather than by
+    hand-keeping two copies in sync.
+    """
+    text = (header + "\n\n" if header else "") + "\n".join(lines) + "\n"
+    print(text)
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+    return path
+
+
 def parse_list(arg):
     """
     Try to parse `arg` as a Python literal list via ast.literal_eval.

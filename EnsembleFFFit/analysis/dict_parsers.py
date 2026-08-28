@@ -182,3 +182,29 @@ class VASPParser(DirectoryParser):
             )
 
         return full_dct
+
+
+def parse_labeled_tree(root, parser_cls=ASEParser):
+    """
+    Parse `root` treating the immediate child directory name as the label
+    -- e.g. a force-field variant number/name -- giving
+    {label: {run: {image: props}}}. label_tuple is computed from root's own
+    resolved depth, not hardcoded, so this works regardless of where the
+    tree lives on disk.
+    """
+    root = str(Path(root).resolve())
+    base_depth = len(Path(root).parts)
+    return parser_cls(root).parse_directory(label_tuple=(base_depth, base_depth + 1))
+
+
+def parse_reference_tree(root, parser_cls=ASEParser):
+    """
+    Parse `root` with no extra label level -- {run: {image: props}} --
+    e.g. a DFT ground-truth mirror with no per-variant subdirectory of its
+    own. Unwraps the single "" label parse_directory produces in this case,
+    so callers get the run/image tree directly rather than needing to know
+    about the empty-label implementation detail.
+    """
+    root = str(Path(root).resolve())
+    base_depth = len(Path(root).parts)
+    return parser_cls(root).parse_directory(label_tuple=(base_depth, base_depth)).get("", {})

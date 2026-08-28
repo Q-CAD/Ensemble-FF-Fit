@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "EnsembleFFFit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Tools to coordinate force field fitting"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -16,10 +16,19 @@ requires-python = ">=3.10"
 # HPC containers going forward, and whichever Python ships in a given container
 # dictates the version actually used. See TODO.md.
 dependencies = [
-    "matensemble @ git+https://github.com/Q-CAD/MatEnsemble.git",
-    "vaspflux @ git+https://code.ornl.gov/rym/vaspflux.git",
-    "vdW_structures @ git+https://github.com/Q-CAD/HeteroBuilder.git@develop",
-    "parse2fit @ git+https://code.ornl.gov/rym/parse2fit.git@develop",
+    # Pre-installed in the MatEnsemble+Flux container (see Kaleb's frontier-v0.5.5
+    # image); declared here as a version check only -- not sourced from git, so
+    # pip confirms the container's existing install rather than re-fetching it.
+    "matensemble>=0.5.1",
+
+    # Deferred: require authenticated access (ORNL GitLab / private GitHub) and
+    # aren't needed for the core MACE/ReaxFF fitting workflow. vaspflux specifically
+    # covers VASP interfacing, which may get reimplemented directly inside
+    # Ensemble-FF-Fit later rather than pulled in as an external dependency.
+    # "vaspflux @ git+https://code.ornl.gov/rym/vaspflux.git",
+    # "vdW_structures @ git+https://github.com/Q-CAD/HeteroBuilder.git@develop",
+    # "parse2fit @ git+https://code.ornl.gov/rym/parse2fit.git@develop",
+
     "pymatgen",
     "pymatgen-analysis-defects",
     "mp-api",

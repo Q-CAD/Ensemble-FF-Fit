@@ -352,6 +352,103 @@ class MDMatEnsemble(MatEnsembleJob):
         return task_arg_list, run_paths, make_paths, task_command, batch_labels
 
     @staticmethod
+    def combine_task_dicts(task_dicts):
+        """
+        Merge a list of same-shaped task_dicts (as returned by
+        build_task_dicts) into a single task_dict covering all of their
+        ffield/structure/output[/in_file] entries -- for callers that want
+        everything in one chore regardless of how many batches
+        parent_levels produced, without needing a parent_levels value tuned
+        to a specific, uniform tree depth (e.g. a per-fit-variant caller
+        scoped to a run_directory containing just that one variant, where
+        the structure tree's depth/shape isn't known in advance). Returns
+        None if `task_dicts` is empty.
+        """
+        if not task_dicts:
+            return None
+
+        combined = {
+            'task_command': task_dicts[0]['task_command'],
+            'entry_point': task_dicts[0]['entry_point'],
+            'ffield': [v for td in task_dicts for v in td['ffield']],
+            'structure': [v for td in task_dicts for v in td['structure']],
+            'output': [v for td in task_dicts for v in td['output']],
+        }
+        if 'in_file' in task_dicts[0]:
+            combined['in_file'] = [v for td in task_dicts for v in td['in_file']]
+
+        return combined
+
+    def build_task_dicts(self, lammps_task, parent_levels, check_files, entry_point, finished_file=None):
+        """
+        Wrap build_lists, flattening each resulting batch into the
+        ready-to-submit task_dict shape run_individual expects (ffield/
+        structure/output[/in_file] lists, plus task_command/entry_point) --
+        this is the flattening pattern callers used to hand-roll themselves
+        (once scoped to a single batch, once across many batches), now done
+        once here regardless of how many batches parent_levels produces.
+        Returns a list of task_dicts, one per batch.
+        """
+        task_arg_list, run_paths, make_paths, task_command, batch_labels = self.build_lists(
+            lammps_task, parent_levels, check_files, finished_file=finished_file)
+
+        ffield_idx = batch_labels.index('ffield')
+        structure_idx = batch_labels.index('structure')
+        output_idx = len(batch_labels)
+        in_file_idx = batch_labels.index('in_file') if 'in_file' in batch_labels else None
+
+        task_dicts = []
+        for batch in task_arg_list:
+            task_dict = {
+                'task_command': task_command,
+                'entry_point': entry_point,
+                'ffield': batch[ffield_idx],
+                'structure': batch[structure_idx],
+                'output': batch[output_idx],
+            }
+            if in_file_idx is not None:
+                task_dict['in_file'] = batch[in_file_idx]
+            task_dicts.append(task_dict)
+
+        return task_dicts
+
+    @staticmethod
+    def build_flat_task_dicts(structures_root, foundation_model, in_file, output_root,
+                              task_command, entry_point, structure_filename="POSCAR",
+                              finished_file=None):
+        """
+        One task_dict per structure found under structures_root, each
+        cross-producted against a single fixed foundation_model and a
+        single fixed in_file/recipe -- for cases where the structures are
+        already a known, flat, explicit list (e.g. pre-sampled MD starting
+        structures) rather than something build_lists' proximity-matching
+        machinery needs to discover. Deliberately bypasses build_lists/
+        _modify_single_run_path, which would otherwise insert
+        structures_root's own subpath (e.g. a "structures/" segment) into
+        the derived output path. `finished_file` (a glob pattern) skips any
+        structure whose output_dir already contains a match.
+        """
+        struct_dirs = sorted(
+            dirpath for dirpath, _, files in os.walk(structures_root) if structure_filename in files
+        )
+
+        task_dicts = []
+        for struct_dir in struct_dirs:
+            rel = os.path.relpath(struct_dir, structures_root)
+            output_dir = os.path.join(output_root, rel)
+            if finished_file and os.path.isdir(output_dir) and glob.glob(os.path.join(output_dir, finished_file)):
+                continue
+            task_dicts.append({
+                'task_command': task_command,
+                'entry_point': entry_point,
+                'ffield': [foundation_model],
+                'structure': [os.path.join(struct_dir, structure_filename)],
+                'output': [output_dir],
+                'in_file': [in_file],
+            })
+        return task_dicts
+
+    @staticmethod
     def run_individual(task_dict):
         """
         Import the user-supplied MD driver script (`task_dict['task_command']`)
@@ -361,11 +458,22 @@ class MDMatEnsemble(MatEnsembleJob):
         function name). The module name is derived from the driver script's
         own filename (extension stripped), not hardcoded either, so this
         works for any user-authored driver script, not just one specific one.
+
+        Passes a 4th list, `in_file`, alongside ffield/structure/output --
+        e.g. an ASE run's config yaml, or a LAMMPS input file with variables
+        to set. `build_lists` already discovers/proximity-matches 'in_file'
+        (and 'control') as option keys, but previously nothing threaded that
+        match through to actual execution; this closes that gap. Defaults to
+        a same-length list of None if the caller's task_dict never set
+        'in_file' at all, so drivers that don't need a recipe file (e.g.
+        ase_mace.py's single points) keep working unchanged -- they just
+        need to accept (and can ignore) this 4th parameter now.
         """
         module_name = Path(task_dict['task_command']).stem
         driver = import_module_from_path(module_name, task_dict['task_command'])
         entry_point = getattr(driver, task_dict['entry_point'])
-        return entry_point(task_dict['ffield'], task_dict['structure'], task_dict['output'])
+        in_file = task_dict.get('in_file', [None] * len(task_dict['ffield']))
+        return entry_point(task_dict['ffield'], task_dict['structure'], task_dict['output'], in_file)
 
 
 class JaxReaxFFMatEnsemble(MatEnsembleJob):
@@ -663,3 +771,301 @@ class MACEMatEnsemble(MatEnsembleJob):
         # can locate the fitted model file directly, without re-walking the
         # run_directory -- MACE writes it to f"{results_dir}/{name}.model".
         return {"status": "complete", "results_dir": overrides.get("results_dir"), "name": name}
+
+
+class DFTMatEnsemble(MatEnsembleJob):
+    """
+    Supports DFT backends (currently just RMG) whose run construction needs a
+    recipe file (an RMG input YAML) cross-producted against structure files
+    (POSCAR/CONTCAR) -- the same recipe/structure-cross-product shape as
+    MDMatEnsemble, reused here rather than inherited from it since every other
+    concrete backend in this module (JaxReaxFFMatEnsemble/MACEMatEnsemble)
+    already duplicates its build_full_runs/batch_by_parent rather than
+    sharing a common non-abstract base for them.
+    """
+
+    def __init__(self, run_directory, inputs_directory, **kwargs):
+        super().__init__(run_directory, inputs_directory, **kwargs)
+        """ DFT self.options keys: 'rmg_yaml' (recipe), a structure-filename key
+        (e.g. 'structure_filename': 'POSCAR'), plus scalar (non-file) config:
+        'dft_task', 'entry_point', 'pseudopotentials_directory', 'gpus_per_node',
+        'electrons_per_gpu', 'grid_divisibility_exponent'. """
+
+    def build_full_runs(self, root0: str, files0: list[str],
+                    root1: str, files1: list[str],
+                    recipe_files: list[str],
+                    labels: list[str], ordered_labels: list[str],
+                    run_directory: str,
+                    inputs_directory: str,
+                    finished_file: str | None = None):
+        """
+        Identical shape to MDMatEnsemble.build_full_runs -- see there for the
+        parameter-by-parameter explanation. root0/files0 anchors on
+        run_directory files, root1/files1 proximity-matches structure files
+        under inputs_directory, recipe_files (the RMG input YAML) is
+        cross-producted against every structure combo, and finished_file
+        skips any combo whose derived task_dir already has a match.
+        """
+        combos0 = self._make_proximity_combinations(root0, files0)
+        structure_combos = self._make_proximity_combinations(root1, files1)
+
+        recipe_paths = self._collect_paths(root1, recipe_files)
+        for n in recipe_files:
+            if not recipe_paths[n]:
+                raise FileNotFoundError(f"{n} not found under {root1}")
+
+        recipe_combos = [list(combo) for combo in itertools.product(
+            *[recipe_paths[n] for n in recipe_files]
+        )]
+
+        combos_both, task_dirs = [], []
+        run_directory_name = Path(run_directory).name
+        inputs_directory_name = Path(inputs_directory).name
+
+        for combo0 in combos0:
+            for struct_combo in structure_combos:
+                for recipe_combo in recipe_combos:
+
+                    combo1 = struct_combo + recipe_combo
+
+                    longest_file = max(struct_combo, key=lambda f: len(f.split(os.sep)))
+                    rel = os.path.relpath(os.path.dirname(longest_file), root1)
+                    parent0 = os.path.dirname(combo0[0])
+                    task_dir = os.path.join(parent0, rel)
+
+                    combo_both = combo0 + combo1
+                    if recipe_combo:
+                        mod_task_dir = self._modify_single_run_path(recipe_combo,
+                                                                   task_dir,
+                                                                   run_directory_name,
+                                                                   inputs_directory_name)
+                    else:
+                        mod_task_dir = task_dir
+
+                    if os.path.isdir(mod_task_dir) and finished_file is not None:
+                        pattern = os.path.join(mod_task_dir, finished_file)
+                        if glob.glob(pattern):
+                            continue
+
+                    task_dirs.append(mod_task_dir)
+                    combos_both.append(combo_both)
+
+        reordered_combos_both = self._reorder_combos(combos_both, labels, ordered_labels)
+        return reordered_combos_both, task_dirs
+
+    def _modify_single_run_path(self, recipe_arg, run_path,
+                             run_directory_name, inputs_directory_name):
+        """Identical to MDMatEnsemble._modify_single_run_path -- see there."""
+        recipe_path_parts = Path(recipe_arg[-1]).parent.parts
+
+        if inputs_directory_name not in recipe_path_parts:
+            return run_path
+
+        add_index = recipe_path_parts.index(inputs_directory_name)
+        remaining = recipe_path_parts[add_index+1:]
+        to_add = os.path.join(*remaining) if remaining else ""
+
+        if not to_add:
+            return run_path
+
+        run_path_parts = Path(run_path).parts
+        if run_directory_name not in run_path_parts:
+            return run_path
+
+        where_add_index = run_path_parts.index(run_directory_name)
+        base = Path(*run_path_parts[:where_add_index+1])
+        tail_parts = run_path_parts[where_add_index+1:]
+        tail = Path(*tail_parts) if tail_parts else Path()
+
+        return str(base / to_add / tail)
+
+    def batch_by_parent(self, tasks, run_paths, labels, parent_levels=0):
+        """Identical to MDMatEnsemble.batch_by_parent -- see there."""
+        if parent_levels == 0:
+            batched_tasks = []
+            new_run_paths = []
+            for i, run_path in enumerate(run_paths):
+                batch = [[tasks[i][j]] for j in range(len(labels))]
+                batch.append([run_path])
+                batched_tasks.append(batch)
+                new_run_paths.append(run_path)
+            return batched_tasks, new_run_paths, run_paths
+
+        sep = os.sep
+
+        def get_parent_str(path, n):
+            parts = path.split(sep)
+            end = len(parts) - n
+            if end <= 0:
+                return sep
+            return sep.join(parts[:end])
+
+        all_labels = labels + ['run_path']
+        groups = defaultdict(lambda: {label: [] for label in all_labels})
+
+        for i, run_path in enumerate(run_paths):
+            parent = get_parent_str(run_path, parent_levels)
+            for j, label in enumerate(labels):
+                groups[parent][label].append(tasks[i][j])
+            groups[parent]['run_path'].append(run_path)
+
+        def merge_child_paths_fast(dct):
+            sorted_paths = sorted(dct.keys(), key=lambda p: p.count(sep))
+            out = {}
+
+            for path in sorted_paths:
+                parent = next(
+                    (p for p in out if path.startswith(p + sep) or path == p),
+                    None
+                )
+                if parent is not None:
+                    for k, v in dct[path].items():
+                        out[parent].setdefault(k, []).extend(v)
+                else:
+                    out[path] = {k: list(v) for k, v in dct[path].items()}
+
+            return out
+
+        groups_merged = merge_child_paths_fast(groups)
+
+        batched_tasks = []
+        new_run_paths = []
+        for parent, contents in groups_merged.items():
+            use_batch = [contents[label] for label in all_labels]
+            batched_tasks.append(use_batch)
+            new_run_paths.append(parent)
+
+        return batched_tasks, new_run_paths, run_paths
+
+    def build_dft_dcts(self, check_files, finished_file=None):
+        """
+        Build the list of per-run DFT override dicts needed to submit one
+        chore per RMG calculation, using `self.run_directory`/
+        `self.inputs_directory`/`self.options` (set by `__init__`).
+        `finished_file` (a glob pattern, e.g. "forcefield.xml") skips any run
+        whose task_dir already contains a match -- see `build_full_runs`.
+
+        Deliberately deals only in file paths, never a resolved Structure/
+        Atoms object: the structure this dict points at (via whichever
+        structure-filename option was configured, e.g. POSCAR) may be stale
+        by the time the chore actually executes (a prior RMG run in the same
+        directory may have since produced a newer rmg_input.*.log or
+        rmg_input) -- the driver script resolves the authoritative structure
+        at execution time via pick_structure.pick_best_structure, not here.
+
+        Also computes 'allocated_nodes', a build-time node-count *estimate*
+        (via rmg_input.compute_grid_and_resources against whichever structure
+        file happens to be on disk right now) purely to size each chore's
+        Resources at submission time. This is only a starting point: if the
+        caller changes the chore's actual node allocation for any reason, it
+        must update this key to match what it actually requested, since
+        RMG.write_input's consistency check (run against the *authoritative*
+        structure, at execution time) compares its own fresh recomputation
+        against exactly this value and raises on mismatch.
+
+        Unlike MDMatEnsemble.build_lists (which accepts any number of
+        backend-dependent structure-ish option keys), the recipe/structure
+        keys here are fixed to exactly 'rmg_yaml' and 'structure_filename' --
+        the driver script needs to unambiguously recover the bare filename
+        `pick_structure.pick_best_structure` expects (via
+        os.path.basename(task_dct['structure_filename'])), which a
+        generic multi-key scan (as MD uses) can't guarantee.
+        """
+        import yaml
+        from pymatgen.core import Structure
+        from EnsembleFFFit.density_functional_theory.rmg.rmg_input import compute_grid_and_resources
+
+        if 'rmg_yaml' not in self.options or 'structure_filename' not in self.options:
+            raise ValueError("DFTMatEnsemble.options must include 'rmg_yaml' and 'structure_filename'.")
+
+        recipe_keys = ['rmg_yaml']
+        structure_keys = ['structure_filename']
+
+        labels = check_files + structure_keys + recipe_keys
+        task_arg_list, run_paths = self.build_full_runs(
+            root0=self.run_directory, files0=[self.options[c] for c in check_files],
+            root1=self.inputs_directory, files1=[self.options[k] for k in structure_keys],
+            recipe_files=[self.options[k] for k in recipe_keys],
+            labels=labels, ordered_labels=labels, finished_file=finished_file,
+            run_directory=self.run_directory, inputs_directory=self.inputs_directory,
+        )
+
+        rmg_name = self.options.get('rmg_name', 'rmg_input')
+        pseudopotentials_directory = self.options.get('pseudopotentials_directory', '')
+        gpus_per_node = self.options.get('gpus_per_node', 8)
+        electrons_per_gpu = self.options.get('electrons_per_gpu', 10)
+        grid_divisibility_exponent = self.options.get('grid_divisibility_exponent', 3)
+
+        dft_dct_list = []
+        for task_arg, run_path in zip(task_arg_list, run_paths, strict=True):
+            task_dct = dict(zip(labels, task_arg))
+            rmg_yaml = task_dct['rmg_yaml']
+            structure_path = task_dct['structure_filename']
+
+            structure = Structure.from_file(structure_path)
+            with open(rmg_yaml, 'r') as f:
+                input_args = yaml.safe_load(f)
+
+            # This class discovers structure_filename via self.options (this
+            # method's own caller-supplied value, e.g. from --structure_filename)
+            # -- but rmg_dft.py resolves it independently at execution time by
+            # reading the *same-named key straight out of this same yaml*,
+            # deliberately, so it stays self-sufficient for standalone testing
+            # without a Pipeline/chore wired around it. Those are two separate
+            # sources of truth for the same concept; if they disagree, every
+            # task built here will silently discover files under one name but
+            # then fail deep inside a chore ("No usable structure found ...")
+            # under the other. Catching the mismatch here, before any chore is
+            # submitted, is a lot clearer than that failure mode.
+            yaml_structure_filename = input_args.get('structure_filename', 'POSCAR')
+            if yaml_structure_filename != self.options['structure_filename']:
+                raise ValueError(
+                    f"{rmg_yaml} sets structure_filename={yaml_structure_filename!r}, but this run was "
+                    f"built with structure_filename={self.options['structure_filename']!r} (e.g. via "
+                    f"--structure_filename) -- rmg_dft.py will use the yaml's value at execution time, "
+                    f"not this one, so every task built here would fail there. Update the yaml to match, "
+                    f"or pass --structure_filename to match the yaml."
+                )
+
+            _, allocated_nodes = compute_grid_and_resources(
+                structure, input_args, target_nodes=0, gpus_per_node=gpus_per_node,
+                electrons_per_gpu=electrons_per_gpu,
+                grid_divisibility_exponent=grid_divisibility_exponent,
+                pseudopotentials_directory=pseudopotentials_directory,
+            )
+
+            dft_dct_list.append({
+                **task_dct,
+                'working_directory': os.path.normpath(run_path),
+                'rmg_name': rmg_name,
+                'pseudopotentials_directory': pseudopotentials_directory,
+                'gpus_per_node': gpus_per_node,
+                'electrons_per_gpu': electrons_per_gpu,
+                'grid_divisibility_exponent': grid_divisibility_exponent,
+                'allocated_nodes': allocated_nodes,
+            })
+
+        return dft_dct_list
+
+    @staticmethod
+    def run_individual(task_dict):
+        """
+        Import the user-supplied DFT driver script (`task_dict['dft_task']`)
+        by path and dispatch to its entry-point function (named by
+        `task_dict['entry_point']`) -- the same dynamic-import-and-dispatch
+        mechanism as MDMatEnsemble.run_individual, and the same
+        list-of-positional-args calling convention (e.g. entry_point(ffield,
+        structure, output) there): here, entry_point(working_directory,
+        rmg_yaml), each wrapped in a singleton list since build_dft_dcts
+        (unlike MD's batch_by_parent) never batches multiple jobs into one
+        task_dict. Everything else the driver needs (pseudopotentials_dir via
+        RMG's own 'pseudo_dir' keyword, gpus_per_node/electrons_per_gpu/
+        grid_divisibility_exponent/rmg_name/rmg_executable/command/
+        structure_filename/allocated_nodes) is read directly out of the
+        rmg_yaml file by the driver script itself -- see
+        test/RMG_testing/rmg_dft.py.
+        """
+        module_name = Path(task_dict['dft_task']).stem
+        driver = import_module_from_path(module_name, task_dict['dft_task'])
+        entry_point = getattr(driver, task_dict['entry_point'])
+        return entry_point([task_dict['working_directory']], [task_dict['rmg_yaml']])

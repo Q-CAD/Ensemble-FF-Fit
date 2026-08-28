@@ -132,3 +132,27 @@ def rank_ff_scores(
 
     ff_labels, scores = map(list, zip(*sorted_items))
     return ff_labels, scores
+
+def format_ranking_table(ff_dct, reference_dct, energy_weight, force_weight, reference_label="DFT"):
+    """
+    Build, per force field ranked best-to-worst (lower weighted score is
+    better), a table of lines: mean raw (unweighted) energy RMSE, mean raw
+    force RMSE (average of fx/fy/fz), and the weighted summed score
+    actually used for ranking/selection. Raw deviations come from a
+    separate energy_weight=1/force_weight=1 call rather than dividing the
+    weighted output back out, since a configured weight of 0 would make
+    that division undefined. Returns (lines, labels, scores), the latter
+    two in ranked order.
+    """
+    raw_deviation_dct = get_ff_deviations(ff_dct, reference_dct, 1.0, 1.0, reference_label=reference_label)
+    labels, scores = rank_ff_scores(ff_dct, reference_dct, energy_weight, force_weight, reference_label=reference_label)
+
+    lines = [f"{'rank':>4}  {'ff_label':>10}  {'raw_energy_rmse':>16}  {'raw_force_rmse':>16}  {'weighted_score':>15}"]
+    for rank, (label, score) in enumerate(zip(labels, scores), start=1):
+        raw = raw_deviation_dct[label]
+        n = sum(len(images) for images in raw.values())
+        raw_e = sum(i["energy"] for md in raw.values() for i in md.values()) / n
+        raw_f = sum((i["fx"] + i["fy"] + i["fz"]) / 3 for md in raw.values() for i in md.values()) / n
+        lines.append(f"{rank:>4}  {label:>10}  {raw_e:>16.6f}  {raw_f:>16.6f}  {score:>15.6f}")
+
+    return lines, labels, scores

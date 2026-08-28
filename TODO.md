@@ -52,15 +52,6 @@ ever passed in. Left as-is per the repo author's confirmation this was written f
 Related: both files' `parse_single_points`-adjacent code has hardcoded `ffield_labels`/`dump_index`
 assumptions that would need generalizing alongside any multi-ffield fix.
 
-## Notebook breakage from the Stage 3 restructuring
-
-`examples/full_fitting/Perlmutter/Demo.ipynb` imports `EnsembleFFFit.matensemble.in_queue`
-(`MatEnsemble_submission_wrapper`) and `EnsembleFFFit.matensemble.lammps.helpers` — both paths moved when
-Stage 3 executed (`in_queue.py` → `EnsembleFFFit/in_queue.py`; `lammps/helpers.py` →
-`EnsembleFFFit/molecular_dynamics/pyMD/helpers.py`), so the notebook's imports are now actually broken, not
-just prospectively so. Not fixed — notebooks are out of scope for the `.py`-file-only refactor stages.
-Update the notebook's imports manually when convenient.
-
 ## `CLAUDE.md` Architecture section staleness — resolved
 
 `CLAUDE.md`'s Architecture section (and the Install section) have been rewritten to describe the current
@@ -68,21 +59,6 @@ Update the notebook's imports manually when convenient.
 now-fixed "known broken imports" list. `Reformat.md` (the Stage 1-3 execution plan/decision-log this info
 was originally drafted for) has been deleted as redundant now that its still-relevant content lives here,
 in `TODO.md`, and in git history — it was a plan document, not something meant to be a permanent fixture.
-
-## Package names for git-installed core dependencies — `vaspflux` and `parse2fit` unverified
-
-While drafting the branching-dependencies `pyproject.toml`, `HeteroBuilder`'s actual declared package name
-turned out to be `vdW_structures` (confirmed via its `pyproject.toml` on GitHub), **not** `heterobuilder`
-as an earlier draft assumed — using the wrong name in a `name @ git+url` requirement causes pip to fail
-the install outright (PEP 508 direct references are name-checked against the target's own metadata).
-`matensemble` (`Q-CAD/MatEnsemble`) and `jaxreaxff` (`Q-CAD/JAX-ReaxFF`) were both confirmed correct by
-checking their public GitHub metadata directly. **`vaspflux` and `parse2fit` could not be verified** —
-both live on ORNL's internal GitLab (`code.ornl.gov`), which wasn't reachable from this environment.
-`pyproject.toml` currently declares them as `vaspflux @ git+https://code.ornl.gov/rym/vaspflux.git` and
-`parse2fit @ git+https://code.ornl.gov/rym/parse2fit.git@develop` — **please confirm both repos' own
-`pyproject.toml`/`setup.py` actually declare `name = "vaspflux"` / `name = "parse2fit"` before relying on
-a fresh `pip install .`**, since a mismatch here would break the core install for everyone, not just one
-extra.
 
 ## mace: PyPI release vs. git ref
 
@@ -123,7 +99,7 @@ turns up.
 
 ## GPU platform extras (`cuda`/`rocm`) and `install_gpu_torch.py`
 
-Added per `GPU_Platform_Extras_Plan.md`. Two things flagged there are still open:
+Added as part of the extras-based `pyproject.toml` redesign. Two things are still open:
 - The `cuda` extra's `install_gpu_torch.py` mapping stays on `cu124` (`torch==2.6.0`) for now, matching
   what the rest of the project already assumed — but this hasn't been validated against an actual
   Perlmutter container build (none has been done yet). Revisit the pin once that happens; it may need to
@@ -145,16 +121,16 @@ core-registered scripts turn out to need extras-only dependencies, it may be wor
 (or moving such scripts to be registered only when their extra is installed, though `[project.scripts]`
 doesn't support that natively).
 
-## `build_*.sh` scripts and `constraints.txt` deleted, before full validation
+## `build_*.sh` scripts and `constraints.txt` deleted — Frontier validated, Perlmutter still open
 
 The five `build_*.sh` scripts and `constraints.txt` have been deleted from this branch (they're
 superseded by the extras-based `pyproject.toml` install + `install_gpu_torch.py`, and are still recoverable
-from the `main` branch / git history if needed). This happened **before** the new path has been fully
-exercised end-to-end on real hardware — Frontier testing (this branch's whole purpose) is in progress, and
-Perlmutter/CUDA hasn't been tried at all yet (see the `cu124` pin note above). If Frontier or Perlmutter
-testing turns up something the old scripts handled that the new path doesn't (e.g. `build_lammps.sh`'s
-Kokkos/cmake flags, module loads, or the `sed` hack for an nvcc flag CMake used to generate incorrectly),
-recover the relevant script from `main` rather than reconstructing it from memory.
+from the `main` branch / git history if needed). Frontier testing has since been carried out end-to-end
+(the RMG -> MACE -> ASE pipeline in `Frontier/RMG_MACE_ASE/` is the result), so the new install path is
+confirmed working there. Perlmutter/CUDA still hasn't been tried at all (see the `cu124` pin note above).
+If Perlmutter testing turns up something the old scripts handled that the new path doesn't (e.g.
+`build_lammps.sh`'s Kokkos/cmake flags, module loads, or the `sed` hack for an nvcc flag CMake used to
+generate incorrectly), recover the relevant script from `main` rather than reconstructing it from memory.
 
 ## Undeclared runtime dependencies in `pyproject.toml` — resolved
 
@@ -208,3 +184,19 @@ tested at all this pass (JAX-ReaxFF was out of scope) — it's a deprecation can
 upstream-deprecated status, but there's a published paper tied to this workflow, and a dedicated Perlmutter
 container for a JAX-ReaxFF fitting workflow may be built before this script is retired. Evaluate in that
 context before deleting it outright.
+
+## Move RMG logic back into pyRMG (future work, not current)
+
+`EnsembleFFFit/density_functional_theory/rmg/` currently carries RMG-specific logic directly in this
+package (calculator, input-file generation, processor-grid sizing, log parsing, etc.). Longer-term, this
+should move back into `pyRMG` as a proper standalone dependency, the way MACE/JAX-ReaxFF are handled via
+their own upstream packages, rather than living in-tree here. Not being done now — flagged for future
+tracking only.
+
+## Create `FFMatEnsemble` to replace `MACEMatEnsemble` (future work, not current)
+
+`MACEMatEnsemble` is currently MACE-specific, but most of its logic (fanning a run-path into per-seed
+fitting subdirectories, matching foundation models against training-input folders, dispatching fits) isn't
+inherently MACE-only. Create a generic `FFMatEnsemble` — structured like `DFTMatEnsemble`/`MDMatEnsemble`,
+i.e. shared/conserved logic with a thin per-backend layer — so the same force-field-fitting caller can wrap
+other MD codes' fitting workflows, not just MACE's. Not being done now — flagged for future tracking only.

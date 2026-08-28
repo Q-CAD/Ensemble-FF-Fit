@@ -101,3 +101,62 @@ def get_structures_scores(
     s_labels, s_images, s_structures, s_scores = map(list, zip(*sorted_values))
 
     return s_labels, s_images, s_structures, s_scores
+
+def select_structures(labels, images, structures, scores, total=None,
+                      score_cap=None, max_per_label=6,
+                      image_distance=1000, unique_run=True):
+    """
+    Downselect (labels, images, structures, scores) -- as produced by
+    get_structures_scores, highest-uncertainty first -- to at most
+    `max_per_label` images per label (e.g. per MD run), each at least
+    `image_distance` apart (as plain integers) from any other selected
+    image sharing that label, stopping once `total` images are selected.
+
+    `total=None`/`score_cap=None` mean "no cap" -- pass explicit numbers to
+    bound them. This differs from a hardcoded numeric default (e.g.
+    score_cap=10) because there's no single score_cap that's sane across
+    different energy_weight/force_weight choices or systems, and silently
+    dropping the highest-uncertainty images (the very ones this function
+    exists to surface) on a stale numeric default would be worse than not
+    capping at all.
+    """
+    if not unique_run:
+        n = total if total is not None else len(labels)
+        return labels[:n], images[:n], structures[:n], scores[:n]
+
+    selected_labels, selected_images, selected_structures, selected_scores = [], [], [], []
+
+    for i, label in enumerate(labels):
+        if total is not None and len(selected_labels) >= total:
+            break
+
+        if score_cap is not None and scores[i] > score_cap:
+            continue
+
+        if selected_labels.count(label) >= max_per_label:
+            continue
+
+        if image_distance > 0:
+            too_close = any(
+                sel_label == label and abs(int(images[i]) - int(selected_images[j])) < image_distance
+                for j, sel_label in enumerate(selected_labels)
+            )
+            if too_close:
+                continue
+
+        selected_labels.append(label)
+        selected_images.append(images[i])
+        selected_structures.append(structures[i])
+        selected_scores.append(scores[i])
+
+    return selected_labels, selected_images, selected_structures, selected_scores
+
+def format_candidate_table(labels, images, scores, output_dirs):
+    """Build the (output_dir -> source md_run/frame/score) table as a list
+    of lines -- numbered output directories alone (0, 1, 2, ...) don't say
+    which trajectory/frame each POSCAR came from, so this is the record of
+    that provenance."""
+    lines = [f"{'rank':>4}  {'output_dir':>10}  {'md_run':>60}  {'frame':>6}  {'variance_score':>15}"]
+    for rank, (label, image, score, out_dir) in enumerate(zip(labels, images, scores, output_dirs), start=1):
+        lines.append(f"{rank:>4}  {out_dir:>10}  {label:>60}  {image:>6}  {score:>15.6f}")
+    return lines
