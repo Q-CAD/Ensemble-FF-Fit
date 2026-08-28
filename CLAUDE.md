@@ -119,6 +119,38 @@ or consumes its outputs. Both live at the top of the `EnsembleFFFit` package (no
   distribution. It has no callers anywhere in this repo (its only caller was an example notebook that has
   since been removed) — a deletion candidate, not yet acted on.
 
+**Why the three subclasses' input-passing conventions deliberately differ, not just historically drifted
+apart** — each one's rigidity (or lack of it) tracks how much variation is actually expected across real
+backends for that concern:
+  - `DFTMatEnsemble.options` is fixed to exactly `rmg_yaml` + `structure_filename`, full stop — DFT codes
+    overwhelmingly share the same "structure file + recipe/config file" input shape (pymatgen/ASE can
+    generate valid inputs for most DFT codes from exactly that pair), and RMG is the only DFT backend
+    expected here for the foreseeable future. There's little to gain from making this backend-agnostic,
+    so it isn't.
+  - `MDMatEnsemble.options` is backend-dependent (`ffield`/`in_file`/`control`/`structure` for LAMMPS, a
+    different set for ASE/TorchSim) but still funnels into the same small, *fixed* positional shape at the
+    `run_individual`/driver-script boundary (`ffield`, `structure`, `output`, `in_file` — four slots, always
+    those four). That's deliberate too: the set of MD drivers this project expects to support (ASE, LAMMPS,
+    TorchSim) is itself small and stable, so a fixed 4-slot contract is worth keeping rather than
+    generalizing further.
+  - `FFMatEnsemble.options` is fully caller-defined (whatever keys `build_ff_dcts`'s `check_files`/
+    inputs-directory-keys end up being for whichever FF backend is configured), and its driver-script
+    contract is correspondingly the loosest of the three: `run_individual` hands the whole resulting
+    overrides dict to the driver script as *one* argument, rather than unpacking into DFT/MD's fixed
+    positional-list shape (see the class docstring in `base.py`, and `FF/mace_fit.py`'s own docstring, for
+    why unpacking into positional lists here would leak backend-specific key names back into `base.py`).
+    This is the one class expected to see the most real variation across backends — different FF-fitting
+    codes (MACE, JAX-ReaxFF, CHGNet, ...) have far more divergent input/hyperparameter shapes than DFT or MD
+    codes typically do — so it's also the one where the input contract needed to flex the most.
+
+One thing this does *not* cover: assembling MACE's own training-data ensemble (which DFT-converged
+structures go into which numbered `train.xyz`/`test.xyz`/`config.yml` folder) is a *separate* concern from
+anything `FFMatEnsemble` does, and always has been, on either side of this refactor — that combining logic
+lives in `potential/mace/build_ensemble_inputs.py`/`write_training_xyz.py`, called directly by
+`run_pipeline.py`'s `build_ff_inputs` stage, well before `fit_and_validate`/`FFMatEnsemble` ever runs.
+`FFMatEnsemble.build_ff_dcts` only proximity-matches an already-built `mace_inputs/` tree against foundation
+models; it doesn't know how that tree was assembled.
+
 ### `density_functional_theory/rmg/` — RMG DFT backend
 
 Backs `DFTMatEnsemble`. `rmg_calculator.py` is an ASE `Calculator` subclass wrapping the `rmg-gpu`/`rmg-cpu`

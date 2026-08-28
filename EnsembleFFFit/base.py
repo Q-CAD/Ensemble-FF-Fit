@@ -477,6 +477,42 @@ class MDMatEnsemble(MatEnsembleJob):
 
 
 class FFMatEnsemble(MatEnsembleJob):
+    """
+    Supports force-field-fitting backends. Matches a single flat check-file
+    per run (e.g. a foundation model) against inputs_directory folders --
+    distinct from DFTMatEnsemble/MDMatEnsemble's recipe/structure
+    cross-product, since a fit's "recipe" (train/test/config files) is
+    itself just another proximity-matched file here, not a separate axis to
+    cross with.
+
+    Deliberately the most input-shape-flexible of the three concrete
+    MatEnsembleJob subclasses -- an intentional divergence, not drift to
+    reconcile:
+    - DFTMatEnsemble.options is fixed to exactly 'rmg_yaml' +
+      'structure_filename'. DFT codes overwhelmingly share that same
+      structure+recipe input shape (pymatgen/ASE can generate inputs for
+      most DFT codes from it), and RMG is the only DFT backend expected for
+      the foreseeable future, so there's little value in generalizing this.
+    - MDMatEnsemble.options is backend-dependent but still funnels into a
+      small, fixed positional shape at the driver-script boundary
+      (ffield/structure/output/in_file) -- the set of MD drivers expected
+      here (ASE, LAMMPS, TorchSim) is itself small and stable.
+    - This class's options are fully caller-defined (whatever keys
+      build_ff_dcts's check_files/inputs-directory-keys end up being), and
+      run_individual passes the whole resulting overrides dict to the
+      driver script as one argument rather than unpacking into positional
+      lists like DFTMatEnsemble.run_individual/MDMatEnsemble.run_individual
+      do -- unpacking into fixed positional slots here would mean hardcoding
+      backend-specific key names (e.g. MACE's 'foundation_model'/
+      'train_file') back into this generic class. Different FF-fitting
+      codes (MACE, JAX-ReaxFF, CHGNet, ...) have far more divergent
+      input/hyperparameter shapes than DFT or MD codes typically do, so this
+      is the one class expected to see real variation across backends, and
+      the driver-script contract needed to flex accordingly. See
+      examples/Frontier/RMG_MACE_ASE/FF/mace_fit.py's own docstring for the
+      concrete (MACE) case.
+    """
+
     def __init__(self, run_directory, inputs_directory, **kwargs):
         super().__init__(run_directory, inputs_directory, **kwargs)
 
