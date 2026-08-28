@@ -205,19 +205,17 @@ inherently MACE-only. Create a generic `FFMatEnsemble` — structured like `DFTM
 i.e. shared/conserved logic with a thin per-backend layer — so the same force-field-fitting caller can wrap
 other MD codes' fitting workflows, not just MACE's. Not being done now — flagged for future tracking only.
 
-## `molecular_dynamics/pyMD/` reorganized into `{ase,lammps,torchsim}/` — mostly resolved
+## `molecular_dynamics/pyMD/` reorganized into `{ase,lammps,torchsim}/` — resolved
 
-Done: `molecular_dynamics/` now mirrors `potential/`/`density_functional_theory/`'s per-backend-folder
+`molecular_dynamics/` now mirrors `potential/`/`density_functional_theory/`'s per-backend-folder
 convention. The intermediate `pyMD/` folder (a LAMMPS-flavored name nesting even the non-LAMMPS backends)
-is gone; `helpers.py` moved to `molecular_dynamics/helpers.py` (shared across backends), and each driver
-moved into its backend's own folder: `ase/ase_mace.py`, `lammps/lammps_reaxff_cpu.py`,
+is gone entirely; `helpers.py` moved to `molecular_dynamics/helpers.py` (shared across backends), and each
+driver moved into its backend's own folder: `ase/ase_mace.py`, `lammps/lammps_reaxff_cpu.py`,
 `lammps/lammps_mace_kokkos_gpu.py`, `lammps/lammps_matensemble_cli.py` (still deprecated, see the entry
 above — moving it didn't fix its already-broken `LammpsMatEnsemble` import, since that class was renamed to
-`MDMatEnsemble`), `torchsim/torch_sim_mace.py`. Confirmed via a full repo-wide import search before moving
-anything that nothing outside `pyMD/` itself ever referenced it.
-
-Still open: `pyMD/examples/` (worked ReaxFF/LAMMPS, MACE/LAMMPS-Kokkos, and MACE/ASE example datasets —
-POSCARs, LAMMPS data files, submit scripts, and two model checkpoints) wasn't moved or deleted yet — same
-orphaned status as the drivers were (nothing currently references it), but it's real example content, not
-just stale script copies, so it needs an explicit decide-and-migrate-or-drop pass rather than a mechanical
-move.
+`MDMatEnsemble`), `torchsim/torch_sim_mace.py`. `pyMD/examples/` (worked ReaxFF/LAMMPS, MACE/LAMMPS-Kokkos,
+and MACE/ASE example datasets — POSCARs, LAMMPS data files, submit scripts, two model checkpoints) was
+deleted outright rather than migrated — confirmed orphaned (nothing referenced it) and fully superseded by
+`examples/Frontier/RMG_MACE_ASE/`; recoverable from git history if ever needed. Confirmed via a full
+repo-wide import search before moving/deleting anything that nothing outside `pyMD/` itself ever
+referenced it.
