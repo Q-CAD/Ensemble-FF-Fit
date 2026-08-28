@@ -6,7 +6,7 @@ decision was made for full context.
 
 ## Torch Sim compatibility
 
-`EnsembleFFFit/molecular_dynamics/pyMD/helpers.py`'s `make_prop_calculators` has `"kinetic_energy"`/
+`EnsembleFFFit/molecular_dynamics/helpers.py`'s `make_prop_calculators` has `"kinetic_energy"`/
 `"temperature"` branches that call `calc_kinetic_energy`/`calc_temperature` from `torch_sim.quantities`,
 but that import is commented out at the top of the file. This is intentional for now — Torch Sim isn't
 standardly available across the HPC container/runtime builds this package targets, and the new `torchsim`
@@ -26,7 +26,7 @@ is needed again.
 
 ## LAMMPS batching per-batch task count
 
-`EnsembleFFFit/molecular_dynamics/pyMD/lammps_matensemble_cli.py`'s `run_lammps` sizes each batch's task
+`EnsembleFFFit/molecular_dynamics/lammps/lammps_matensemble_cli.py`'s `run_lammps` sizes each batch's task
 count using only the first structure in that batch. Acceptable today because batching is typically used
 for single-point runs where 1 GPU suffices regardless of atom count, but would undercount if batches ever
 mix structures of meaningfully different sizes. Revisit if that usage pattern changes.
@@ -83,7 +83,7 @@ builds its own LAMMPS with Python bindings already linked in, so this project do
 LAMMPS (or the `cuequivariance`/`cupy` stack that used to back its ML-IAP path) via pip at all — see the
 "lammps extra retired" entry below. Perlmutter's containerized build hasn't been done yet, so it's not
 100% confirmed the same holds there. Revisit if that turns out to need something explicit.
-`EnsembleFFFit/molecular_dynamics/pyMD/helpers.py`'s `import_lammps()`/`import_lammps_mliap()` raise a
+`EnsembleFFFit/molecular_dynamics/helpers.py`'s `import_lammps()`/`import_lammps_mliap()` raise a
 clear error if the module isn't available in the meantime.
 
 ## `lammps` extra retired
@@ -138,7 +138,7 @@ Previously, `numpy`, `matminer`, `scikit-learn`, `scipy`, `tqdm`, and `pyyaml` (
 imported by always-present modules (`analysis/`, `utilities/`, `structures/`) but missing from
 `pyproject.toml`'s `dependencies`. All six were added to core `dependencies` as part of the
 branching-dependencies rewrite (confirmed via a script that walks every `.py` file's imports in those
-directories, plus `potential/reaxff`, `potential/mace`, and `molecular_dynamics/pyMD`, and diffs against
+directories, plus `potential/reaxff`, `potential/mace`, and `molecular_dynamics/{ase,lammps,torchsim}`, and diffs against
 the declared dependencies/extras). `torch`/`e3nn`/`mace` were also found in
 `utilities/create_lammps_models_cli.py`, but per the entry above, those are handled via a guarded import
 rather than added to core.
@@ -172,7 +172,7 @@ is what made the three `*_matensemble_cli.py` scripts' fate need deciding — se
 ## Three `*_matensemble_cli.py` console scripts — deprecated, registrations removed, files not yet deleted
 
 `potential/mace/mace_matensemble_cli.py`, `potential/reaxff/jaxreaxff_matensemble_cli.py`, and
-`molecular_dynamics/pyMD/lammps_matensemble_cli.py` all depended solely on `MatEnsembleJob.run()` for
+`molecular_dynamics/lammps/lammps_matensemble_cli.py` all depended solely on `MatEnsembleJob.run()` for
 execution, which no longer exists (see the entry above) — the intended replacement is the `Pipeline`/chore
 pattern now exercised by `examples/Frontier/RMG_MACE_ASE/run_pipeline.py`. Their `pyproject.toml`
 console-script registrations (`mace_matensemble`/`jaxreaxff_matensemble`/`lammps_matensemble`) have been
@@ -205,14 +205,19 @@ inherently MACE-only. Create a generic `FFMatEnsemble` — structured like `DFTM
 i.e. shared/conserved logic with a thin per-backend layer — so the same force-field-fitting caller can wrap
 other MD codes' fitting workflows, not just MACE's. Not being done now — flagged for future tracking only.
 
-## Reorganize `molecular_dynamics/pyMD/` to mirror `density_functional_theory/` (future work, not current)
+## `molecular_dynamics/pyMD/` reorganized into `{ase,lammps,torchsim}/` — mostly resolved
 
-`density_functional_theory/` is organized as one subfolder per DFT code (`rmg/`, eventually `vasp/`,
-`qe/`, etc.), each holding its own task-specific logic/execution files. `molecular_dynamics/pyMD/`
-predates that convention and instead nests everything (drivers, examples, helpers, the deprecated
-`lammps_matensemble_cli.py`) under a single `pyMD/` folder regardless of MD backend. Longer-term, split it
-the same way `potential/{mace,reaxff}/` and `density_functional_theory/{rmg,...}/` already are:
-`molecular_dynamics/{ase,lammps,torchsim}/`, dropping the `pyMD` name entirely. Should happen alongside (or
-after) auditing `pyMD/drivers/`/`pyMD/examples/` for what's actually still current versus superseded by
-`examples/Frontier/RMG_MACE_ASE/MD/*/ase_inputs/*.py` (see the architecture notes in `CLAUDE.md`). Not
-being done now — flagged for future tracking only.
+Done: `molecular_dynamics/` now mirrors `potential/`/`density_functional_theory/`'s per-backend-folder
+convention. The intermediate `pyMD/` folder (a LAMMPS-flavored name nesting even the non-LAMMPS backends)
+is gone; `helpers.py` moved to `molecular_dynamics/helpers.py` (shared across backends), and each driver
+moved into its backend's own folder: `ase/ase_mace.py`, `lammps/lammps_reaxff_cpu.py`,
+`lammps/lammps_mace_kokkos_gpu.py`, `lammps/lammps_matensemble_cli.py` (still deprecated, see the entry
+above — moving it didn't fix its already-broken `LammpsMatEnsemble` import, since that class was renamed to
+`MDMatEnsemble`), `torchsim/torch_sim_mace.py`. Confirmed via a full repo-wide import search before moving
+anything that nothing outside `pyMD/` itself ever referenced it.
+
+Still open: `pyMD/examples/` (worked ReaxFF/LAMMPS, MACE/LAMMPS-Kokkos, and MACE/ASE example datasets —
+POSCARs, LAMMPS data files, submit scripts, and two model checkpoints) wasn't moved or deleted yet — same
+orphaned status as the drivers were (nothing currently references it), but it's real example content, not
+just stale script copies, so it needs an explicit decide-and-migrate-or-drop pass rather than a mechanical
+move.

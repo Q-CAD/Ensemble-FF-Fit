@@ -13,8 +13,8 @@ import gc
 from torch_sim.models.mace import MaceModel
 from torch_sim import static, integrate
 from torch_sim.integrators import nvt_langevin
-from EnsembleFFFit.molecular_dynamics.pyMD.helpers import parse_list
-from EnsembleFFFit.molecular_dynamics.pyMD.helpers import make_prop_calculators
+from EnsembleFFFit.molecular_dynamics.helpers import parse_list
+from EnsembleFFFit.molecular_dynamics.helpers import make_prop_calculators
 from ase.io import read
 import json
 

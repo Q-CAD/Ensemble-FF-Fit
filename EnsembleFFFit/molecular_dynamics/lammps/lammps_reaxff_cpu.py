@@ -5,9 +5,9 @@ task in the batch.
 """
 import sys
 import os
-from EnsembleFFFit.molecular_dynamics.pyMD.helpers import parse_list
-from EnsembleFFFit.molecular_dynamics.pyMD.helpers import get_elements
-from EnsembleFFFit.molecular_dynamics.pyMD.helpers import import_lammps
+from EnsembleFFFit.molecular_dynamics.helpers import parse_list
+from EnsembleFFFit.molecular_dynamics.helpers import get_elements
+from EnsembleFFFit.molecular_dynamics.helpers import import_lammps
 
 if __name__ == "__main__":
     lammps = import_lammps()

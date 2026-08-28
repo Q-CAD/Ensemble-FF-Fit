@@ -46,7 +46,7 @@ if you're touching this area:
   container-specific (confirmed container-provided on Frontier; assumed but not yet confirmed on
   Perlmutter, see `TODO.md`). There is accordingly no `lammps` extra. Every driver script's `import
   lammps`/`import lammps.mliap` goes through
-  `EnsembleFFFit.molecular_dynamics.pyMD.helpers.import_lammps()` / `import_lammps_mliap()`, which raise a
+  `EnsembleFFFit.molecular_dynamics.helpers.import_lammps()` / `import_lammps_mliap()`, which raise a
   clear, actionable error (rather than a bare `ModuleNotFoundError`) if the module isn't set up yet.
 - `openequivariance` (the `rocm` extra's MACE accelerator) needs a working GCC 9+ and HIP toolchain *at
   pip-install time* to build its kernels — it isn't a prebuilt wheel like `cuequivariance` is.
@@ -125,26 +125,31 @@ working directory). `convergence.py`/`rmg_log.py` parse RMG's own log output for
 See `examples/Frontier/RMG_MACE_ASE/README.md` for the full container/build/launch story around actually
 running `rmg-gpu` — that operational knowledge lives there, not here.
 
-### `potential/{mace,reaxff}/` and `molecular_dynamics/pyMD/` — per-backend drivers
+### `potential/{mace,reaxff}/` and `molecular_dynamics/{ase,lammps,torchsim}/` — per-backend drivers
 
-- **`potential/mace/mace_matensemble_cli.py`**, **`potential/reaxff/jaxreaxff_matensemble_cli.py`**, and
-  **`molecular_dynamics/pyMD/lammps_matensemble_cli.py`** are deprecated, not-yet-deleted console scripts
-  (their `pyproject.toml` registrations have already been removed) — they depended on `MatEnsembleJob.run()`,
-  which no longer exists. The current pattern is the `Pipeline`/`@pipe.chore` one described above; see
-  `TODO.md` for what still needs to happen before these files themselves are deleted.
-- **`molecular_dynamics/pyMD/drivers/`** (`lammps_reaxff_cpu.py`, `lammps_mace_kokkos_gpu.py`,
-  `ase_mace.py`, `torch_sim_mace.py`) and **`molecular_dynamics/pyMD/examples/*/inputs_directory/*.py`**
-  (manually-kept-in-sync copies of those drivers, per MatEnsemble's convention of expecting the task script
-  to live alongside the structure/force-field files inside `inputs_directory/`) predate the current
+`molecular_dynamics/` mirrors `potential/`/`density_functional_theory/`'s per-backend-folder convention —
+`ase/`, `lammps/`, `torchsim/`, each holding that backend's per-task driver script(s), plus a shared
+`molecular_dynamics/helpers.py` (`import_lammps()`/`import_lammps_mliap()` guards described above,
+`parse_list`, `get_elements`, `make_prop_calculators`) used across all three. There used to be an
+intermediate `pyMD/` folder (LAMMPS-flavored name nesting even the non-LAMMPS backends); it's gone —
+confirmed via a full repo-wide import search that nothing outside `pyMD/` itself ever referenced it
+(`base.py`'s `MDMatEnsemble.run_individual` dispatches to driver scripts via `import_module_from_path`, a
+generic by-path loader, not a `pyMD` import).
+
+- `lammps/lammps_reaxff_cpu.py`, `lammps/lammps_mace_kokkos_gpu.py`, `ase/ase_mace.py`,
+  `torchsim/torch_sim_mace.py` are per-task Python entry points, invoked once per structure via
+  `--lammps_task`/`--*_task` by whatever submission script builds the chore. They predate the current
   `Pipeline`/chore pattern and haven't been exercised against it — likely stale relative to what
-  `examples/Frontier/RMG_MACE_ASE/MD/*/ase_inputs/*.py` now demonstrates working. Flagged for review, not
-  yet removed. `potential/mace/build_ensemble_inputs.py`/`write_training_xyz.py` are the current,
-  actively-used MACE training-input builders.
-- `molecular_dynamics/pyMD/helpers.py` also has the `import_lammps()`/`import_lammps_mliap()` guards
-  described above.
-- **Planned reorganization** (not yet done): mirror `density_functional_theory/`'s per-backend-folder
-  layout — `molecular_dynamics/{ase,lammps,torchsim}/` instead of everything nested under the single
-  `pyMD/` folder, dropping the `pyMD` name entirely. See `TODO.md`.
+  `examples/Frontier/RMG_MACE_ASE/MD/*/ase_inputs/*.py` now demonstrates working; flagged for review, not
+  removed.
+- **`lammps/lammps_matensemble_cli.py`** is a deprecated, not-yet-deleted console script (its
+  `pyproject.toml` registration has already been removed) — it depended on `MatEnsembleJob.run()`, which no
+  longer exists, and its `from EnsembleFFFit.base import LammpsMatEnsemble` import is now additionally
+  broken outright (that class was renamed to `MDMatEnsemble`). The current pattern is the `Pipeline`/
+  `@pipe.chore` one described above; see `TODO.md` for what still needs to happen before this file is
+  deleted.
+- `potential/mace/build_ensemble_inputs.py`/`write_training_xyz.py` are the current, actively-used MACE
+  training-input builders.
 
 ### `structures/` — training-structure generation CLIs
 

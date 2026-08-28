@@ -10,7 +10,7 @@ import os
 import torch
 import gc
 from mace.calculators import MACECalculator
-from EnsembleFFFit.molecular_dynamics.pyMD.helpers import parse_list
+from EnsembleFFFit.molecular_dynamics.helpers import parse_list
 from ase.io import read
 from ase.io import Trajectory
 from ase.md.verlet import VelocityVerlet
