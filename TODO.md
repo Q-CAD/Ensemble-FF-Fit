@@ -126,7 +126,7 @@ doesn't support that natively).
 The five `build_*.sh` scripts and `constraints.txt` have been deleted from this branch (they're
 superseded by the extras-based `pyproject.toml` install + `install_gpu_torch.py`, and are still recoverable
 from the `main` branch / git history if needed). Frontier testing has since been carried out end-to-end
-(the RMG -> MACE -> ASE pipeline in `Frontier/RMG_MACE_ASE/` is the result), so the new install path is
+(the RMG -> MACE -> ASE pipeline in `examples/Frontier/RMG_MACE_ASE/` is the result), so the new install path is
 confirmed working there. Perlmutter/CUDA still hasn't been tried at all (see the `cu124` pin note above).
 If Perlmutter testing turns up something the old scripts handled that the new path doesn't (e.g.
 `build_lammps.sh`'s Kokkos/cmake flags, module loads, or the `sed` hack for an nvcc flag CMake used to
@@ -166,24 +166,28 @@ worth a permanent shared-base fixture for two classes where one is expected to g
 Each backend now exposes a `run_individual(overrides)` static method (MACE: calls `mace.cli.run_train.run`
 directly; MD: dynamically imports the user-supplied driver script by path and dispatches to its named
 entry-point function) that a thin `@pipe.chore`-decorated wrapper function in the submission script calls —
-see `test/multi_MACE_stages/run_multi_stage_MACE.py`/`run_single_points.py` for the working pattern. This
+see `examples/Frontier/RMG_MACE_ASE/run_pipeline.py` for the working pattern. This
 is what made the three `*_matensemble_cli.py` scripts' fate need deciding — see the new entry below.
 
-## Three `*_matensemble_cli.py` console scripts — deprecated, not yet deleted
+## Three `*_matensemble_cli.py` console scripts — deprecated, registrations removed, files not yet deleted
 
 `potential/mace/mace_matensemble_cli.py`, `potential/reaxff/jaxreaxff_matensemble_cli.py`, and
-`molecular_dynamics/pyMD/lammps_matensemble_cli.py` (the `mace_matensemble`/`jaxreaxff_matensemble`/
-`lammps_matensemble` console scripts in `pyproject.toml`) all depended solely on `MatEnsembleJob.run()`
-for execution, which no longer exists (see the entry above) — they are left in place, broken, rather than
-fixed, since the intended replacement is the `Pipeline`/chore-based pattern now exercised by the
-`test/multi_MACE_stages/` scripts. They (and their `pyproject.toml` script registrations) should be deleted
-once real replacements exist for each: `lammps_matensemble_cli.py`'s useful bits are already superseded by
+`molecular_dynamics/pyMD/lammps_matensemble_cli.py` all depended solely on `MatEnsembleJob.run()` for
+execution, which no longer exists (see the entry above) — the intended replacement is the `Pipeline`/chore
+pattern now exercised by `examples/Frontier/RMG_MACE_ASE/run_pipeline.py`. Their `pyproject.toml`
+console-script registrations (`mace_matensemble`/`jaxreaxff_matensemble`/`lammps_matensemble`) have been
+removed; the files themselves are left in place, broken, pending deletion once real replacements exist for
+each: `lammps_matensemble_cli.py`'s useful bits are already superseded by
 `MDMatEnsemble.build_lists`/`run_individual`; `mace_matensemble_cli.py`'s by
 `MACEMatEnsemble.build_mace_dcts`/`run_individual`. `jaxreaxff_matensemble_cli.py` has not been exercised or
 tested at all this pass (JAX-ReaxFF was out of scope) — it's a deprecation candidate given JAX-ReaxFF's
 upstream-deprecated status, but there's a published paper tied to this workflow, and a dedicated Perlmutter
 container for a JAX-ReaxFF fitting workflow may be built before this script is retired. Evaluate in that
 context before deleting it outright.
+
+`cn_checker`/`copy_by_pattern`'s console-script registrations have also been removed for the same reason
+(unexercised by the current pipeline) — `cn_checker_cli.py`/`copy_by_pattern_cli.py` themselves are left in
+place, unregistered, not deleted.
 
 ## Move RMG logic back into pyRMG (future work, not current)
 
@@ -200,3 +204,15 @@ fitting subdirectories, matching foundation models against training-input folder
 inherently MACE-only. Create a generic `FFMatEnsemble` — structured like `DFTMatEnsemble`/`MDMatEnsemble`,
 i.e. shared/conserved logic with a thin per-backend layer — so the same force-field-fitting caller can wrap
 other MD codes' fitting workflows, not just MACE's. Not being done now — flagged for future tracking only.
+
+## Reorganize `molecular_dynamics/pyMD/` to mirror `density_functional_theory/` (future work, not current)
+
+`density_functional_theory/` is organized as one subfolder per DFT code (`rmg/`, eventually `vasp/`,
+`qe/`, etc.), each holding its own task-specific logic/execution files. `molecular_dynamics/pyMD/`
+predates that convention and instead nests everything (drivers, examples, helpers, the deprecated
+`lammps_matensemble_cli.py`) under a single `pyMD/` folder regardless of MD backend. Longer-term, split it
+the same way `potential/{mace,reaxff}/` and `density_functional_theory/{rmg,...}/` already are:
+`molecular_dynamics/{ase,lammps,torchsim}/`, dropping the `pyMD` name entirely. Should happen alongside (or
+after) auditing `pyMD/drivers/`/`pyMD/examples/` for what's actually still current versus superseded by
+`examples/Frontier/RMG_MACE_ASE/MD/*/ase_inputs/*.py` (see the architecture notes in `CLAUDE.md`). Not
+being done now — flagged for future tracking only.

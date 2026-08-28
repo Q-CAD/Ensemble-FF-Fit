@@ -41,7 +41,7 @@ pip install -e ".[mace,rocm]"        # MACE, ROCm-accelerated (openequivariance)
 pip install -e ".[mace]"             # MACE, no GPU acceleration library beyond torch itself
 pip install -e ".[reaxff]"           # JAX-ReaxFF (CUDA-only; deprecated upstream, see TODO.md)
 pip install -e ".[torchsim]"         # experimental Torch Sim MD driver
-pip install -e ".[notebooks]"        # jupyter/py3dmol/ipykernel, to run the example notebooks
+pip install -e ".[notebooks]"        # jupyter/py3dmol/ipykernel, for interactive/notebook work
 pip install -e ".[dev]"              # pytest/black/ruff
 pip install -e .                     # core only: structure generation + analysis, no MLIP backend
 ```
@@ -53,5 +53,5 @@ Perlmutter containers are expected to provide LAMMPS with its Python bindings al
 `TODO.md` if that assumption turns out to be wrong once containerized MatEnsemble+LAMMPS deployment is
 fully worked out.
 
-See `CLAUDE.md` for more on the project's architecture and the legacy `build_*.sh` scripts this install
-path is intended to eventually replace.
+See `CLAUDE.md` for more on the project's architecture, and `examples/Frontier/RMG_MACE_ASE/README.md`
+for a full worked example (RMG DFT -> MACE fitting -> ASE MD) on OLCF Frontier.

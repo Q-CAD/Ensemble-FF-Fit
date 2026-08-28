@@ -6,17 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 EnsembleFFFit coordinates data- and time-efficient fine-tuning of interatomic potentials/force-fields
 (both physics-based and ML, e.g. JAX-ReaxFF, MACE, LAMMPS-based FFs) by fitting an *ensemble* of models
-against ab initio (DFT/VASP) data, using adaptive asynchronous job scheduling (MatEnsemble, an external
-sibling package) plus on-the-fly uncertainty quantification (UQ) to decide what new training data to
-generate next. It targets HPC clusters — historically NERSC Perlmutter (SLURM + Cray `cc`/`CC`/`ftn`
-compilers, CUDA GPUs), now also OLCF Frontier (ROCm/AMD GPUs) via a MatEnsemble+Flux container. LAMMPS
-itself (with Python bindings) is expected to be provided by that container on both systems, not built or
-pip-installed by this project.
+against ab initio (DFT) data, using adaptive asynchronous job scheduling (MatEnsemble, an external sibling
+package) plus on-the-fly uncertainty quantification (UQ) to decide what new training data to generate
+next. It now also drives the DFT convergence step itself (RMG, via `density_functional_theory/rmg/`), not
+just the fitting/UQ side — see `examples/Frontier/RMG_MACE_ASE/` for the full loop. It targets HPC
+clusters — historically NERSC Perlmutter (SLURM + Cray `cc`/`CC`/`ftn` compilers, CUDA GPUs), now also
+OLCF Frontier (ROCm/AMD GPUs) via a MatEnsemble+Flux container. LAMMPS itself (with Python bindings) is
+expected to be provided by that container on both systems, not built or pip-installed by this project.
 
 Companion projects it depends on (not vendored here, resolved as normal `pyproject.toml` dependencies):
-`MatEnsemble` (Flux-based async task execution), `vaspflux` (DFT job orchestration), `parse2fit` (parses
-raw DFT/MD output into FF training-set formats), `HeteroBuilder` (importable as `vdW_structures`;
-heterostructure generation).
+`MatEnsemble` (Flux-based async task execution; pinned as a version check against the container's
+pre-installed copy, not fetched from git). `vaspflux` (DFT job orchestration), `parse2fit` (parses raw
+DFT/MD output into FF training-set formats), and `HeteroBuilder` (importable as `vdW_structures`;
+heterostructure generation) are currently commented out in `pyproject.toml` — deferred, not core
+dependencies of the RMG/MACE/ASE pipeline this repo currently exercises.
 
 ## Install / environment setup
 
@@ -60,8 +63,9 @@ you need to recover exactly what they did for a specific backend/HPC quirk that 
 ## No test suite
 
 There are no test files, `tests/` directory, or pytest config anywhere in this repo. Validate changes by
-running the relevant CLI end-to-end (with `--dry_run` where the matensemble CLIs support it) or against
-the example notebooks rather than by writing/running unit tests, unless you're explicitly asked to add one.
+running the relevant CLI end-to-end, or against `examples/Frontier/RMG_MACE_ASE/` (the worked RMG -> MACE
+-> ASE pipeline example — see its own `README.md`), rather than by writing/running unit tests, unless
+you're explicitly asked to add one.
 
 ## Architecture
 
@@ -80,42 +84,67 @@ or consumes its outputs. Both live at the top of the `EnsembleFFFit` package (no
 `potential/`, `molecular_dynamics/`, and the MLIP-backend CLIs below all import directly from
 `EnsembleFFFit.base`.
 
-- **`base.py`** defines `MatEnsembleJob(ABC)`, with abstract `sorting_function()`/`get_tasks()`. Shared
-  logic: given a `run_directory` (where jobs/results live) and `inputs_directory` (template inputs), it
-  walks both trees, matches files by directory *proximity* (`_make_proximity_combinations`,
-  `build_full_runs`/`build_full_runs_v2`), optionally cross-products "recipe" files against structure
-  files, and batches individual tasks by common parent directory (`batch_by_parent`/`batch_by_parent_v2`)
-  so one job can process a whole set of related structures/seeds at once. `run()` either prints a
-  dry-run summary or hands the built task list off to `matensemble.manager.SuperFluxManager` (the
-  *externally* pip-installed `MatEnsemble` package — no relation to this file's own location) via
-  `poolexecutor(...)` — this is the actual scheduling boundary.
-- Three concrete subclasses, one per backend, each just supplying the sizing/task-arg logic
-  `base.py` needs:
-  - `LammpsMatEnsemble` — reads structures via pymatgen `LammpsData` or ASE lammps-dump; sizes tasks by
-    atom count.
+- **`base.py`** defines `MatEnsembleJob(ABC)`, with abstract `build_full_runs()`/`batch_by_parent()`.
+  Shared logic: given a `run_directory` (where jobs/results live) and `inputs_directory` (template
+  inputs), each subclass walks both trees, matches files by directory *proximity*
+  (`_make_proximity_combinations`) or by a flat recipe-file cross-product, and batches individual tasks by
+  common parent directory so one chore can process a whole set of related structures/seeds at once. There
+  is no `run()`/`SuperFluxManager`/`poolexecutor` call anymore — each subclass instead exposes a static
+  `run_individual(task_dict)` that a thin `@pipe.chore`-decorated wrapper function in the *submission
+  script* calls; the submission script builds a `matensemble.pipeline.Pipeline`, registers chores via
+  `pipe.call(...)`, and submits via `pipe.submit(...)` — see
+  `examples/Frontier/RMG_MACE_ASE/run_pipeline.py` for the current working pattern end-to-end.
+- Four concrete subclasses, one per backend, each supplying the sizing/task-arg logic `base.py` needs and
+  its own `run_individual`:
+  - `MDMatEnsemble` (in `base.py`; renamed from `LammpsMatEnsemble` and generalized) — covers ASE and
+    TorchSim MD drivers as well as LAMMPS; `run_individual` dynamically imports the user-supplied driver
+    script by path and dispatches to its named entry-point function.
   - `JaxReaxFFMatEnsemble` — converts an argparse namespace into per-task CLI-arg lists for JAX-ReaxFF.
-  - `MACEMatEnsemble` — `construct_tasks` fans a single run-path into per-seed subdirectories
-    (`run_path/<seed>/`) so each ensemble member gets its own MACE fit; builds `mace_run_train`-style args.
+  - `MACEMatEnsemble` — `build_mace_dcts` fans a single run-path into per-seed subdirectories so each
+    ensemble member gets its own MACE fit; `run_individual` calls `mace.cli.run_train.run` directly. See
+    `TODO.md` for the planned generalization of this class into a backend-agnostic `FFMatEnsemble`.
+  - `DFTMatEnsemble` — the RMG DFT backend; `build_dft_dcts` sizes each structure's node/GPU footprint
+    (see `density_functional_theory/rmg/` below), `run_individual` dispatches to a site-specific driver
+    script (e.g. `rmg_dft.py`) by path/entry-point, same convention as `MDMatEnsemble`.
 - **`in_queue.py`** is a separate SLURM-level helper (`sbatch` submission, `squeue` polling, sentinel-file
   based done/fail detection, auto-resubmission) operating one level above MatEnsemble's in-job Flux task
-  distribution. It has no internal callers in `EnsembleFFFit/` — it's invoked directly from example
-  notebooks.
+  distribution. It has no callers anywhere in this repo (its only caller was an example notebook that has
+  since been removed) — a deletion candidate, not yet acted on.
+
+### `density_functional_theory/rmg/` — RMG DFT backend
+
+Backs `DFTMatEnsemble`. `rmg_calculator.py` is an ASE `Calculator` subclass wrapping the `rmg-gpu`/`rmg-cpu`
+binary (bare `{rmg_executable} {rmg_name}` invocation by deliberate design — Flux/MatEnsemble owns launch
+semantics for the surrounding chore, so this never wraps the command in its own `srun`/`mpirun`/`flux run`).
+`rmg_input.py` builds RMG's own input-file format from a yaml recipe + structure, including
+`compute_grid_and_resources` (grid sizing / node-count estimation — `processor_grid.py` holds the actual
+grid-search logic). `pick_structure.py` resolves which structure file to actually run against at execution
+time (a fresh `POSCAR` vs. a newer `rmg_input.*.log`/`rmg_input` left by a previous attempt in the same
+working directory). `convergence.py`/`rmg_log.py` parse RMG's own log output for SCF convergence status.
+`valence.py`/`forcefield.py` handle pseudopotential valence-electron counts and force-field-format output.
+See `examples/Frontier/RMG_MACE_ASE/README.md` for the full container/build/launch story around actually
+running `rmg-gpu` — that operational knowledge lives there, not here.
 
 ### `potential/{mace,reaxff}/` and `molecular_dynamics/pyMD/` — per-backend drivers
 
 - **`potential/mace/mace_matensemble_cli.py`**, **`potential/reaxff/jaxreaxff_matensemble_cli.py`**, and
-  **`molecular_dynamics/pyMD/lammps_matensemble_cli.py`** are the installed console scripts
-  (`mace_matensemble`, `jaxreaxff_matensemble`, `lammps_matensemble`): each instantiates the matching
-  `base.py` subclass, builds the task/run-path lists, and calls `.run(...)`.
+  **`molecular_dynamics/pyMD/lammps_matensemble_cli.py`** are deprecated, not-yet-deleted console scripts
+  (their `pyproject.toml` registrations have already been removed) — they depended on `MatEnsembleJob.run()`,
+  which no longer exists. The current pattern is the `Pipeline`/`@pipe.chore` one described above; see
+  `TODO.md` for what still needs to happen before these files themselves are deleted.
 - **`molecular_dynamics/pyMD/drivers/`** (`lammps_reaxff_cpu.py`, `lammps_mace_kokkos_gpu.py`,
-  `ase_mace.py`, `torch_sim_mace.py`) are the per-task Python entry points that
-  `lammps_matensemble_cli.py` invokes once per structure via `--lammps_task`.
-  `molecular_dynamics/pyMD/examples/*/inputs_directory/*.py` are **manually kept in sync copies** of these
-  drivers (not generated/symlinked) — MatEnsemble expects the task script to live alongside the
-  structure/force-field files inside `inputs_directory/`, so a driver change must be hand-copied into each
-  example's `inputs_directory/` to take effect there.
+  `ase_mace.py`, `torch_sim_mace.py`) and **`molecular_dynamics/pyMD/examples/*/inputs_directory/*.py`**
+  (manually-kept-in-sync copies of those drivers, per MatEnsemble's convention of expecting the task script
+  to live alongside the structure/force-field files inside `inputs_directory/`) predate the current
+  `Pipeline`/chore pattern and haven't been exercised against it — likely stale relative to what
+  `examples/Frontier/RMG_MACE_ASE/MD/*/ase_inputs/*.py` now demonstrates working. Flagged for review, not
+  yet removed. `potential/mace/build_ensemble_inputs.py`/`write_training_xyz.py` are the current,
+  actively-used MACE training-input builders.
 - `molecular_dynamics/pyMD/helpers.py` also has the `import_lammps()`/`import_lammps_mliap()` guards
   described above.
+- **Planned reorganization** (not yet done): mirror `density_functional_theory/`'s per-backend-folder
+  layout — `molecular_dynamics/{ase,lammps,torchsim}/` instead of everything nested under the single
+  `pyMD/` folder, dropping the `pyMD` name entirely. See `TODO.md`.
 
 ### `structures/` — training-structure generation CLIs
 
@@ -136,29 +165,31 @@ Pipeline: `dict_parsers.py` (generic ASE/VASP single-point ingestion) and `lammp
 shape) parse raw run output → `variance.py` (`get_structures_scores`) scores *ensemble disagreement* per
 MD image, driving which new structures get added to training → `best_force_field.py`
 (`get_ff_deviations`/`rank_ff_scores`) scores each ensemble member's RMSE against DFT ground truth,
-driving which force field is "best." `cn_checker_cli.py` is an independent structural-QC tool
-(coordination-number deviation via `pymatgen`'s `CrystalNN`), orthogonal to the energy/force analysis
-chain above.
+driving which force field is "best" → `downselect_force_fields.py` copies the top-ranked force fields
+forward into the next stage. `cn_checker_cli.py` is an independent structural-QC tool (coordination-number
+deviation via `pymatgen`'s `CrystalNN`), orthogonal to the energy/force analysis chain above — its
+`pyproject.toml` console-script registration has been removed (deprecated CLI surface, not deleted).
 
 ### `utilities/` — misc CLIs and structure deduplication
 
-`copy_by_pattern_cli.py`/`create_lammps_models_cli.py`/`formation_energy_lammps_runs.py`/
-`parse_vasp_aimd_cli.py` are standalone helper CLIs. `cluster_lammps_runs.py` featurizes structures with
-matminer's `CrystalNNFingerprint`, builds a pairwise dissimilarity matrix, and hierarchically clusters to
-pick representative structures per formula/cluster (reduces redundant training data) — it's the one
-module here that's part of the generate→analyze pipeline rather than a standalone tool.
-`create_lammps_models_cli.py` needs the `mace` extra despite being registered as a core console script;
-see `TODO.md` for how that's handled.
+`create_lammps_models_cli.py`/`formation_energy_lammps_runs.py`/`parse_vasp_aimd_cli.py` are standalone
+helper CLIs. `copy_by_pattern_cli.py`'s console-script registration has been removed (same as
+`cn_checker_cli.py` above) — the file remains, unregistered. `cluster_lammps_runs.py` featurizes
+structures with matminer's `CrystalNNFingerprint`, builds a pairwise dissimilarity matrix, and
+hierarchically clusters to pick representative structures per formula/cluster (reduces redundant training
+data) — it's the one module here that's part of the generate→analyze pipeline rather than a standalone
+tool. `create_lammps_models_cli.py` needs the `mace` extra despite being registered as a core console
+script; see `TODO.md` for how that's handled, and for the plan to eventually move it under `potential/mace/`.
 
 ### `examples/`
 
-`examples/full_fitting/Perlmutter/Demo.ipynb` and `examples/full_fitting_2/Bi_Se_Heteros.ipynb` are full
-worked walkthroughs of the entire pipeline (structure generation → DFT via vaspflux → parse via parse2fit
-→ ensemble fit via the matensemble CLIs → UQ-driven next-structure selection → best-FF ranking) for
-ReaxFF and MACE respectively, with real intermediate data checked in alongside the notebooks. Read these
-before changing pipeline-stage interfaces — they're the closest thing this repo has to integration tests
-and to end-user-facing usage documentation. Note: these notebooks still import from the pre-reorganization
-module paths (`EnsembleFFFit.matensemble.*`) and haven't been updated — see `TODO.md`.
+`examples/Frontier/RMG_MACE_ASE/` is a full worked walkthrough of the current pipeline on OLCF Frontier —
+RMG DFT convergence → MACE ensemble fitting/validation → ASE finite-temperature MD sampling → UQ-based
+downselection of next-round DFT candidates — driven by a single `run_pipeline.py`/`workflow_config.yaml`
+pair via the `Pipeline`/`@pipe.chore` pattern described above. It's a trimmed copy of a real, working run
+(structures + driver/recipe scripts only, no run output, foundation model fetched separately — see its own
+`README.md`), and is the closest thing this repo has to an integration test and to end-user-facing usage
+documentation. Read it before changing pipeline-stage interfaces.
 
 ## Security note
 

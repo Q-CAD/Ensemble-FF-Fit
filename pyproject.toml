@@ -103,13 +103,9 @@ generate_defects = "EnsembleFFFit.structures.defects.generate_defects_cli:main"
 generate_substitutions = "EnsembleFFFit.structures.substitutions.generate_substitutions_cli:main"
 generate_vdW_spacing = "EnsembleFFFit.structures.vdW_layers.generate_vdW_spacing_cli:main"
 
-jaxreaxff_matensemble = "EnsembleFFFit.potential.reaxff.jaxreaxff_matensemble_cli:main"
-mace_matensemble = "EnsembleFFFit.potential.mace.mace_matensemble_cli:main"
-lammps_matensemble = "EnsembleFFFit.molecular_dynamics.pyMD.lammps_matensemble_cli:main"
-
-cn_checker = "EnsembleFFFit.analysis.cn_checker_cli:main"
-
-copy_by_pattern = "EnsembleFFFit.utilities.copy_by_pattern_cli:main"
+# create_lammps_models is MACE-specific -- it belongs under potential/mace/ once
+# MACEMatEnsemble is generalized into FFMatEnsemble (see TODO.md), but is kept
+# registered here for now.
 create_lammps_models = "EnsembleFFFit.utilities.create_lammps_models_cli:main"
 
 [tool.setuptools.packages.find]
