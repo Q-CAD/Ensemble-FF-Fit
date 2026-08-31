@@ -166,16 +166,22 @@ real consumer, since it's LAMMPS-specific) rather than lost. All of the above ar
 the `main`/`Claude` branches if any of it turns out to be needed as reference when incorporating another
 backend later.
 
-## Move RMG logic back into pyRMG — in progress (this branch)
+## Move RMG logic back into pyRMG — resolved
 
 `EnsembleFFFit/density_functional_theory/rmg/`'s logic (calculator, input-file generation, processor-grid
 sizing, log parsing, etc.) has been reconciled into `pyRMG` (on its own `updated_MatEnsemble` branch,
 including two new modules, `rmg_calculator.py`/`pick_structure.py`, that didn't exist there before) and
 `pyRMG` added as the new `rmg` extra here, the way MACE is handled via its own upstream package.
-`base.py`/`examples/Frontier/RMG_MACE_ASE/DFT/rmg_dft.py` now import from `pyRMG` instead of the local
-copy. **The local `EnsembleFFFit/density_functional_theory/rmg/` copy has deliberately not been deleted
-yet** — kept as a fallback until the `RMG_MACE_ASE` example pipeline has actually been run end-to-end
-against the `pyRMG` import path and confirmed working; delete it only after that verification, not before.
+`base.py` and every `rmg_dft.py` driver copy import from `pyRMG` instead of a local copy. Confirmed working
+end-to-end by actually running the `RMG_MACE_ASE` example pipeline's `converge_dft_data` stage against the
+`pyRMG` import path before deleting anything, per plan.
+
+`EnsembleFFFit/density_functional_theory/rmg/` now holds only `rmg_dft.py` (the package-level reference
+copy of the driver script, analogous to `molecular_dynamics/ase/ase_mace.py`) — the RMG logic files
+themselves (`rmg_calculator.py`, `rmg_input.py`, `processor_grid.py`, `rmg_log.py`, `valence.py`,
+`convergence.py`, `forcefield.py`, `pick_structure.py`) have been deleted from this repo entirely, since
+they're no longer used by anything here; still recoverable from `pyRMG`'s git history (they were reconciled
+from these exact files) or this repo's own history if ever needed.
 
 ## `FFMatEnsemble` replaces `MACEMatEnsemble` — resolved
 

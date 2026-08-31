@@ -156,14 +156,19 @@ lives in `potential/mace/build_ensemble_inputs.py`/`write_training_xyz.py`, call
 `FFMatEnsemble.build_ff_dcts` only proximity-matches an already-built `mace_inputs/` tree against foundation
 models; it doesn't know how that tree was assembled.
 
-### RMG DFT backend — now `pyRMG` (the `rmg` extra), not vendored in-tree
+### RMG DFT backend — `pyRMG` (the `rmg` extra), not vendored in-tree
 
-Backs `DFTMatEnsemble`. RMG-specific logic has moved to the standalone `pyRMG` package (an optional
-dependency here, the `rmg` extra — same pattern as `mace`), not `EnsembleFFFit/density_functional_theory/
-rmg/` — `base.py` and `examples/Frontier/RMG_MACE_ASE/DFT/rmg_dft.py` both import from `pyRMG` now. The
-old in-tree copy is deliberately still present on disk as a fallback until the `RMG_MACE_ASE` example has
-been run end-to-end against the `pyRMG` import path and confirmed working (see `TODO.md`) — don't add new
-code against the in-tree copy, and don't delete it before that verification either.
+Backs `DFTMatEnsemble`. RMG-specific logic (calculator, input-file generation, processor-grid sizing, log
+parsing, structure resolution) lives in the standalone `pyRMG` package, an optional dependency here (the
+`rmg` extra — same pattern as `mace`), confirmed working end-to-end against the `RMG_MACE_ASE` example
+pipeline. `base.py` and every `rmg_dft.py` driver copy import from `pyRMG` (`pyRMG.rmg_calculator`,
+`pyRMG.rmg_input`, `pyRMG.pick_structure`, etc.), not a local copy.
+
+`EnsembleFFFit/density_functional_theory/rmg/` now holds only `rmg_dft.py` — the package-level reference
+copy of the driver script `DFTMatEnsemble.run_individual` dispatches to (analogous to
+`molecular_dynamics/ase/ase_mace.py`), not RMG logic itself. A deployment's actual `dft_task` should point
+at its own copy (e.g. `examples/Frontier/RMG_MACE_ASE/DFT/rmg_dft.py`), hand-kept-in-sync with this one,
+same convention as the MD drivers.
 
 `pyRMG.rmg_calculator` is an ASE `Calculator` subclass wrapping the `rmg-gpu`/`rmg-cpu` binary (bare
 `{rmg_executable} {rmg_name}` invocation by deliberate design — Flux/MatEnsemble owns launch semantics for
