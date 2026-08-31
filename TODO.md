@@ -166,13 +166,16 @@ real consumer, since it's LAMMPS-specific) rather than lost. All of the above ar
 the `main`/`Claude` branches if any of it turns out to be needed as reference when incorporating another
 backend later.
 
-## Move RMG logic back into pyRMG (future work, not current)
+## Move RMG logic back into pyRMG — in progress (this branch)
 
-`EnsembleFFFit/density_functional_theory/rmg/` currently carries RMG-specific logic directly in this
-package (calculator, input-file generation, processor-grid sizing, log parsing, etc.). Longer-term, this
-should move back into `pyRMG` as a proper standalone dependency, the way MACE is handled via its own
-upstream package, rather than living in-tree here. Not being done now — flagged for future
-tracking only.
+`EnsembleFFFit/density_functional_theory/rmg/`'s logic (calculator, input-file generation, processor-grid
+sizing, log parsing, etc.) has been reconciled into `pyRMG` (on its own `updated_MatEnsemble` branch,
+including two new modules, `rmg_calculator.py`/`pick_structure.py`, that didn't exist there before) and
+`pyRMG` added as the new `rmg` extra here, the way MACE is handled via its own upstream package.
+`base.py`/`examples/Frontier/RMG_MACE_ASE/DFT/rmg_dft.py` now import from `pyRMG` instead of the local
+copy. **The local `EnsembleFFFit/density_functional_theory/rmg/` copy has deliberately not been deleted
+yet** — kept as a fallback until the `RMG_MACE_ASE` example pipeline has actually been run end-to-end
+against the `pyRMG` import path and confirmed working; delete it only after that verification, not before.
 
 ## `FFMatEnsemble` replaces `MACEMatEnsemble` — resolved
 

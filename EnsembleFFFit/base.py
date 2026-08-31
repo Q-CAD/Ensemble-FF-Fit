@@ -494,8 +494,9 @@ class FFMatEnsemble(MatEnsembleJob):
       but because structure+recipe is expected to keep working as a generic
       contract across those codes, which pymatgen/ASE already have solid
       input-generation support for. RMG is the outlier that needed bespoke,
-      hand-written support (density_functional_theory/rmg/) specifically
-      because it's obscure enough to lack that kind of Python tooling.
+      hand-written support (the pyRMG package, an optional dependency --
+      see the 'rmg' extra) specifically because it's obscure enough to lack
+      that kind of Python tooling.
     - MDMatEnsemble.options is backend-dependent but still funnels into a
       small, fixed positional shape at the driver-script boundary
       (ffield/structure/output/in_file) -- the set of MD drivers expected
@@ -884,7 +885,7 @@ class DFTMatEnsemble(MatEnsembleJob):
         """
         import yaml
         from pymatgen.core import Structure
-        from EnsembleFFFit.density_functional_theory.rmg.rmg_input import compute_grid_and_resources
+        from pyRMG.rmg_input import compute_grid_and_resources
 
         if 'rmg_yaml' not in self.options or 'structure_filename' not in self.options:
             raise ValueError("DFTMatEnsemble.options must include 'rmg_yaml' and 'structure_filename'.")

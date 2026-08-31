@@ -58,6 +58,18 @@ dependencies = [
 mace = [
     "mace-torch",
 ]
+# RMG-specific input generation/execution/log-parsing, split back out into its own
+# pyRMG package (an optional dependency here, same pattern as `mace`) rather than
+# vendored in-tree -- DFTMatEnsemble (base.py) and the RMG_MACE_ASE example's
+# DFT/rmg_dft.py driver both import from pyRMG, not a local copy. Pinned to a
+# branch rather than a released version, matching this project's other
+# git-based optional dependencies (see the commented-out vaspflux/parse2fit/
+# vdW_structures entries above) -- repoint at pyRMG's main/develop once
+# updated_MatEnsemble is merged there, rather than leaving this on a
+# feature-branch ref long-term.
+rmg = [
+    "pyRMG @ git+https://code.ornl.gov/rym/pyrmg.git@updated_MatEnsemble",
+]
 # torch itself is intentionally excluded here too, for the same reason as `mace`
 # above -- run install_gpu_torch.py first.
 torchsim = [

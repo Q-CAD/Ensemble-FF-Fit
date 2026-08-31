@@ -51,9 +51,9 @@ from ase.calculators.calculator import all_changes
 from pymatgen.io.ase import AseAtomsAdaptor
 
 from EnsembleFFFit.utilities.general import parse_list
-from EnsembleFFFit.density_functional_theory.rmg.pick_structure import pick_best_structure
-from EnsembleFFFit.density_functional_theory.rmg.rmg_input import RMGInput
-from EnsembleFFFit.density_functional_theory.rmg.rmg_calculator import RMG
+from pyRMG.pick_structure import pick_best_structure
+from pyRMG.rmg_input import RMGInput
+from pyRMG.rmg_calculator import RMG
 
 
 def run_rmg_calculation(working_directory_list, rmg_yaml_list):

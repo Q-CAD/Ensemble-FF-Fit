@@ -8,7 +8,7 @@ EnsembleFFFit coordinates data- and time-efficient fine-tuning of interatomic po
 (currently MACE; JAX-ReaxFF support is on hold, see `TODO.md`) by fitting an *ensemble* of models
 against ab initio (DFT) data, using adaptive asynchronous job scheduling (MatEnsemble, an external sibling
 package) plus on-the-fly uncertainty quantification (UQ) to decide what new training data to generate
-next. It now also drives the DFT convergence step itself (RMG, via `density_functional_theory/rmg/`), not
+next. It now also drives the DFT convergence step itself (RMG, via the `pyRMG` package -- see below), not
 just the fitting/UQ side — see `examples/Frontier/RMG_MACE_ASE/` for the full loop. It targets HPC
 clusters — historically NERSC Perlmutter (SLURM + Cray `cc`/`CC`/`ftn` compilers, CUDA GPUs), now also
 OLCF Frontier (ROCm/AMD GPUs) via a MatEnsemble+Flux container. LAMMPS itself (with Python bindings) is
@@ -112,7 +112,7 @@ or consumes its outputs. Both live at the top of the `EnsembleFFFit` package (no
     JAX-ReaxFF support (previously `JaxReaxFFMatEnsemble`) is removed from this branch, not ported into
     `FFMatEnsemble` — see `TODO.md`.
   - `DFTMatEnsemble` — the RMG DFT backend; `build_dft_dcts` sizes each structure's node/GPU footprint
-    (see `density_functional_theory/rmg/` below), `run_individual` dispatches to a site-specific driver
+    (see the `pyRMG` section below), `run_individual` dispatches to a site-specific driver
     script (e.g. `rmg_dft.py`) by path/entry-point, same convention as `MDMatEnsemble`/`FFMatEnsemble`.
 - **`in_queue.py`** is a separate SLURM-level helper (`sbatch` submission, `squeue` polling, sentinel-file
   based done/fail detection, auto-resubmission) operating one level above MatEnsemble's in-job Flux task
@@ -129,8 +129,8 @@ backends for that concern:
     codes — pymatgen/ASE already have solid input-generation support for VASP/QE/Gaussian-like codes, so
     a structure+config pair should suffice for each without `DFTMatEnsemble` itself needing to change.
     RMG is the outlier here, not the norm: it's obscure enough that it needed genuinely bespoke, hand-written
-    support (`density_functional_theory/rmg/`) rather than leaning on existing Python DFT tooling the way
-    VASP/QE/Gaussian are expected to. If a future DFT code turns out *not* to fit the structure+config
+    support (the `pyRMG` package, an optional dependency) rather than leaning on existing Python DFT
+    tooling the way VASP/QE/Gaussian are expected to. If a future DFT code turns out *not* to fit the structure+config
     shape, that's the point to revisit whether this class needs to generalize — not before.
   - `MDMatEnsemble.options` is backend-dependent (`ffield`/`in_file`/`control`/`structure` for LAMMPS, a
     different set for ASE/TorchSim) but still funnels into the same small, *fixed* positional shape at the
@@ -156,19 +156,26 @@ lives in `potential/mace/build_ensemble_inputs.py`/`write_training_xyz.py`, call
 `FFMatEnsemble.build_ff_dcts` only proximity-matches an already-built `mace_inputs/` tree against foundation
 models; it doesn't know how that tree was assembled.
 
-### `density_functional_theory/rmg/` — RMG DFT backend
+### RMG DFT backend — now `pyRMG` (the `rmg` extra), not vendored in-tree
 
-Backs `DFTMatEnsemble`. `rmg_calculator.py` is an ASE `Calculator` subclass wrapping the `rmg-gpu`/`rmg-cpu`
-binary (bare `{rmg_executable} {rmg_name}` invocation by deliberate design — Flux/MatEnsemble owns launch
-semantics for the surrounding chore, so this never wraps the command in its own `srun`/`mpirun`/`flux run`).
-`rmg_input.py` builds RMG's own input-file format from a yaml recipe + structure, including
-`compute_grid_and_resources` (grid sizing / node-count estimation — `processor_grid.py` holds the actual
-grid-search logic). `pick_structure.py` resolves which structure file to actually run against at execution
-time (a fresh `POSCAR` vs. a newer `rmg_input.*.log`/`rmg_input` left by a previous attempt in the same
-working directory). `convergence.py`/`rmg_log.py` parse RMG's own log output for SCF convergence status.
-`valence.py`/`forcefield.py` handle pseudopotential valence-electron counts and force-field-format output.
-See `examples/Frontier/RMG_MACE_ASE/README.md` for the full container/build/launch story around actually
-running `rmg-gpu` — that operational knowledge lives there, not here.
+Backs `DFTMatEnsemble`. RMG-specific logic has moved to the standalone `pyRMG` package (an optional
+dependency here, the `rmg` extra — same pattern as `mace`), not `EnsembleFFFit/density_functional_theory/
+rmg/` — `base.py` and `examples/Frontier/RMG_MACE_ASE/DFT/rmg_dft.py` both import from `pyRMG` now. The
+old in-tree copy is deliberately still present on disk as a fallback until the `RMG_MACE_ASE` example has
+been run end-to-end against the `pyRMG` import path and confirmed working (see `TODO.md`) — don't add new
+code against the in-tree copy, and don't delete it before that verification either.
+
+`pyRMG.rmg_calculator` is an ASE `Calculator` subclass wrapping the `rmg-gpu`/`rmg-cpu` binary (bare
+`{rmg_executable} {rmg_name}` invocation by deliberate design — Flux/MatEnsemble owns launch semantics for
+the surrounding chore, so this never wraps the command in its own `srun`/`mpirun`/`flux run`).
+`pyRMG.rmg_input` builds RMG's own input-file format from a yaml recipe + structure, including
+`compute_grid_and_resources` (grid sizing / node-count estimation — `pyRMG.processor_grid` holds the
+actual grid-search logic). `pyRMG.pick_structure` resolves which structure file to actually run against at
+execution time (a fresh `POSCAR` vs. a newer `rmg_input.*.log`/`rmg_input` left by a previous attempt in
+the same working directory). `pyRMG.convergence`/`pyRMG.rmg_log` parse RMG's own log output for SCF
+convergence status. `pyRMG.valence`/`pyRMG.forcefield` handle pseudopotential valence-electron counts and
+force-field-format output. See `examples/Frontier/RMG_MACE_ASE/README.md` for the full container/build/
+launch story around actually running `rmg-gpu` — that operational knowledge lives there, not here.
 
 ### `potential/mace/` and `molecular_dynamics/{ase,lammps,torchsim}/` — per-backend drivers
 
