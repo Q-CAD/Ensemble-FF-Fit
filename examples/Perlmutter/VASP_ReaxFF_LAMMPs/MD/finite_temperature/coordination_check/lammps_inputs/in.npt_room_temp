@@ -1,0 +1,107 @@
+# Trimmed from MD/finite_temperature/uq/lammps_inputs/in.matensemble for the
+# coordination-stability check (confirmed 2026-09): that recipe's own NVT
+# melt (4500K) / anneal stages are for a different, structure-diversity-
+# generation purpose and were never actually needed here -- cn_checker.py's
+# own default check_file (data.npt_relax) is written right after the
+# room-temperature NPT stage below, before melt/anneal would even start, so
+# running them would only add ~2/3 more compute per structure for no effect
+# on this check. Everything else (variable names read by
+# lammps_reaxff_md.py, dump/pair_style setup, minimize stages) is otherwise
+# unchanged from in.matensemble.
+#
+# pair_style/fix below use the /kk (Kokkos GPU) suffix (confirmed 2026-09:
+# every run up to this point used the plain, unsuffixed CPU-only reaxff/
+# qeq/reax -- one core, GPU idle despite gpus_per_task=1 being reserved per
+# chore -- this is the fix). Requires lammps_reaxff_md.py's own
+# cmdargs=[..., "-k","on","g","1","-sf","kk",...] (see that driver's own
+# docstring) -- "-sf kk" alone would have auto-suffixed these anyway, but
+# spelling it out here keeps the intent visible in the one file that
+# actually defines the physics, rather than relying purely on an implicit
+# command-line flag elsewhere.
+
+# VARIABLES
+variable        T_room                  equal 300
+
+# run length -- <=10ps at timestep 0.5fs per the user's own sizing (2026-09)
+variable room_steps     equal 20000
+
+units real
+dimension 3
+boundary p p p
+atom_style charge
+box tilt large
+processors * * *
+# KOKKOS's own GPU default is "neigh full" + "newton off" (confirmed via
+# source, 2026-09, src/KOKKOS/kokkos.cpp: ngpus>0 -> neighflag=FULL,
+# newtonflag=0) -- but pair_style reaxff/kk's init_style() calls straight
+# through to the BASE (non-Kokkos) PairReaxFF::init_style()
+# (src/KOKKOS/pair_reaxff_kokkos.cpp:168), which unconditionally requires
+# newton pair ON (src/REAXFF/pair_reaxff.cpp:364) -- this is a genuine
+# conflict with Kokkos's own GPU default, NOT a sign that ReaxFF can't run
+# on GPU at all. pair_reaxff_kokkos.cpp's own force loops explicitly
+# branch on HALF/HALFTHREAD/FULL (confirmed by reading its source), so it
+# supports a half neighbor list too -- the fix is to override Kokkos's
+# default via `package kokkos neigh half`, which the same source
+# (kokkos.cpp's accelerator() parsing) confirms auto-promotes to the
+# GPU-safe HALFTHREAD variant whenever ngpus>0, rather than switching off
+# GPU use entirely.
+package kokkos neigh half neigh/qeq half newton on
+newton on
+neighbor 3.0 bin
+neigh_modify every 1 delay 0 check yes
+
+read_data ${structure}
+
+pair_style reaxff/kk ${control_filename} safezone 3.0 mincap 500
+pair_coeff * * ${ff_filename} ${elements}
+
+fix 1 all qeq/reax/kk 1 0.0 10.0 1.0e-6 reaxff
+
+thermo 		1000
+thermo_style 	custom step temp pe epair etotal press pxx pyy pzz lx ly lz vol density
+
+dump            d1 all custom 1000 ${dump_file} id type x y z fx fy fz
+dump_modify     d1 element ${elements}
+# ${dump_file} (set by lammps_reaxff_md.py) has no "*" wildcard, so every
+# snapshot appends to this one file rather than LAMMPS writing a separate
+# dump_<timestep>.dump per snapshot -- see that driver's own docstring for
+# why (HPC scratch filesystems' total-file-count quotas). sort id belongs
+# here (not left to the reader) so the file itself is already atom-id
+# ordered at the source, matching the reader's own order=True default.
+dump_modify     d1 sort id
+
+timestep        0.5
+
+#------------------- ENERGY_MINIMIZATION ---------------------
+# Both stages use cg/kk, not fire -- CONFIRMED (2026-09, via the actual
+# error: "Must use a Kokkos-enabled min style ... with Kokkos minimize"):
+# this build has no fire/kk (only cg/kk among Kokkos-enabled minimizers),
+# and Kokkos requires every min_style actually used to be Kokkos-enabled
+# -- unlike pair_style/fix's auto-suffix, there's no silent CPU fallback
+# for minimize (atoms/data live in Kokkos's own memory space; falling
+# back to a CPU-only minimizer mid-run isn't something LAMMPS does
+# quietly). Loose/tight distinction kept via minimize's own tolerance
+# args, not via a different min_style for stage 1.
+# stage 1: fast, loose (get rid of large forces)
+min_style cg/kk
+minimize 1.0e-2 1.0e-2 500 5000
+
+# stage 2: tighter refine
+min_style cg/kk
+minimize 1.0e-6 1.0e-4 2000 10000
+# ${output_dir} (set by lammps_reaxff_md.py, same convention as
+# ${dump_file}) -- CONFIRMED necessary, not cosmetic (2026-09): a bare
+# relative filename here writes into this chore's own process CWD, not
+# this structure's own output directory, and gets silently overwritten by
+# every other structure this same chore processes afterward. See that
+# driver's own comment on ${output_dir} for how this was actually caught.
+write_data      ${output_dir}/Min.data
+
+#------------------- NPT AT ${T_room} ------------------------
+# data.npt_relax below is what cn_checker.py compares against the pre-MD
+# structure.lmp -- see this file's own header comment.
+fix             relax all npt temp ${T_room} ${T_room} 100 x 0 0 100 y 0 0 100
+run             ${room_steps}
+unfix           relax
+write_restart   ${output_dir}/npt_relax.res
+write_data      ${output_dir}/data.npt_relax

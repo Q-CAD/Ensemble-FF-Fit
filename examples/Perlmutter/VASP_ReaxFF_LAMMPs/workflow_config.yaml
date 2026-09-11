@@ -1,0 +1,450 @@
+# Single config for run_pipeline.py. Run one stage at a time -- each is its
+# own compute allocation/apptainer invocation -- or run them all in sequence
+# in one process via --stage all:
+#
+#   python run_pipeline.py --config workflow_config.yaml --stage converge_dft_data
+#   python run_pipeline.py --config workflow_config.yaml --stage parse2fit_generation
+#   python run_pipeline.py --config workflow_config.yaml --stage sample_ft_md_structures
+#   python run_pipeline.py --config workflow_config.yaml --stage build_ff_inputs
+#   python run_pipeline.py --config workflow_config.yaml --stage fit_and_validate
+#   python run_pipeline.py --config workflow_config.yaml --stage prepare_reaxff_validation_structures
+#   python run_pipeline.py --config workflow_config.yaml --stage stage_reaxff_validation_force_fields
+#   python run_pipeline.py --config workflow_config.yaml --stage reaxff_validation_single_points
+#   python run_pipeline.py --config workflow_config.yaml --stage rank_reaxff_validation
+#   python run_pipeline.py --config workflow_config.yaml --stage stage_ft_md_force_fields
+#   python run_pipeline.py --config workflow_config.yaml --stage finite_temperature_md_batch
+#   python run_pipeline.py --config workflow_config.yaml --stage check_coordination_stability
+#   python run_pipeline.py --config workflow_config.yaml --stage all
+#
+# An earlier UQ/active-learning loop (downselect -> uq_single_points ->
+# select_dft_candidates) has been removed entirely -- see run_pipeline.py's
+# own module docstring for why (the JAX-ReaxFF ensemble fits here weren't
+# judged reliable enough yet to drive that kind of active selection).
+
+# Stage: converge_dft_data. Submits one VASP chore per (structure, vasp_yaml)
+# pair under `directory`, sized per-job from its own computed
+# allocated_nodes (via vasp_resource_estimator's atoms-per-node heuristic,
+# NOT RMG's processor-grid search). dft_task/vasp_yaml_name are this DFT
+# backend's own driver/recipe -- see run_pipeline.py's module docstring for
+# why this stays VASP-specific rather than a generic abstraction.
+# vdW_single_point.yml now points at vasp/6.4.2-gpu (confirmed faster than
+# the CPU build) -- gpus_per_task/max_tasks_per_job below match that:
+# max_tasks_per_job=4 caps every job at one Perlmutter GPU node's worth of
+# A100s (4), regardless of what the cores_per_task-based num_tasks formula
+# below would otherwise compute, avoiding "not enough resources for the
+# current job" until multi-node GPU sizing is worked out. UNVERIFIED
+# against a real Flux-dispatched allocation -- see vasp_dft.py/
+# run_pipeline.py's docstrings; re-check cores_per_task/max_tasks_per_job
+# the first time a real VASP chore runs through Flux.
+converge_dft_data:
+  directory: DFT
+  dft_task: DFT/vasp_dft.py
+  structure_filename: POSCAR
+  vasp_yaml_name: vdW_single_point.yml
+  entry_point: run_vasp_calculation
+  check_files: [dft_recipe]
+  finished_file: properties.json
+  cores_per_task: 16
+  gpus_per_task: 1
+  atoms_per_node: 100
+  max_tasks_per_job: 4
+
+# Stage: parse2fit_generation. Runs parse2fit's own input-generation step
+# in-process (ReadWriteFactory(...).get_writer().write_input_files()) --
+# see JaxReaxFF_Integration_Plan.md Stage 3c and run_pipeline.py's own
+# run_parse2fit_generation docstring for the full design. yaml_directive
+# is a separate, user-provided parse2fit YAML directive file, in
+# parse2fit's OWN format (not this file's convention) -- every directory/
+# subtract/add path inside it must already be absolute (parse2fit's own
+# readwrite.py resolves relative ones via os.path.abspath() against
+# whatever this process's cwd happens to be, which is fragile -- baked
+# absolute here instead, by design, rather than worked around).
+# reaxff_newest_kT.yml's own output_directory (FF/, already absolute)
+# governs where its runs_to_generate geo/trainset.in variant folders
+# actually land, not anything in this section.
+parse2fit_generation:
+  yaml_directive: DFT/reaxff_newest_kT.yml
+
+# Stage: sample_ft_md_structures. Selects starting structures for
+# finite_temperature_md. source_root defaults to converge_dft_data.
+# directory/training_subpath when null; dest_root defaults to
+# finite_temperature_md.lammps_inputs_directory/structures_subpath when
+# null -- structures live inside lammps_inputs_directory (same convention
+# as MD_single_points/MD_uq_single_points), not in a separately tracked
+# directory. Site-specific selection logic (which structures feed FT-MD,
+# and how) is deliberately its own small stage rather than folded
+# elsewhere, so it stays easy to find and adjust.
+#
+# named_paths below picks 3 specific structures by path, for the ReaxFF
+# coordination-environment-stability check (compare FT-MD's starting vs.
+# final structure) -- a representative random spread (this stage's
+# active-learning default, via total/seed below, commented out here but
+# left as reference) doesn't make sense for that purpose, since the
+# specific structures matter, not a spread. Every named_paths entry is
+# converted to structure.lmp (LAMMPS data format), not copied as a plain
+# POSCAR -- required by finite_temperature_md_batch.structure being
+# structure.lmp, not POSCAR (see run_pipeline.py's
+# _copy_starting_structures docstring for why plain POSCAR was never
+# actually correct here, just never previously exercised).
+#
+# dest_root points at the coordination_check tree (NOT uq/lammps_inputs --
+# that one-model smoke test is left as-is, disabled, under
+# finite_temperature_md below). supercell_kwargs (confirmed 2026-09,
+# user's own explicit requirement) is applied to each named structure
+# BEFORE structure.lmp is written, via pymatgen's
+# CubicSupercellTransformation -- the bare DFT unit cells here are small
+# enough (Bi2Se3's own primitive/hexagonal cells) that NPT thermalization
+# could artificially freeze coordination-relevant motion without a
+# reasonably-sized, regular supercell first. min_atoms/min_length are a
+# starting point, not tuned against real runs yet -- adjust if the
+# resulting supercells turn out too small (motion still frozen) or too
+# large (MD needlessly expensive) once the first real FT-MD batch runs.
+sample_ft_md_structures:
+  source_root: DFT/training
+  training_subpath: training
+  dest_root: MD/finite_temperature/coordination_check/lammps_inputs/structures
+  structure_filename: POSCAR
+  supercell_kwargs:
+    min_atoms: 100
+    min_length: 12.0
+  # Relative, not absolute -- CHANGED (2026-09, during migration into this
+  # example): these used to be hardcoded to the original investigation's
+  # own absolute path, which broke the moment this directory moved.
+  # _copy_starting_structures resolves each entry via Path(p).resolve()
+  # against CWD, so relative paths work fine here as long as run_pipeline.py
+  # is run from this directory (same convention every other path in this
+  # file already follows).
+  named_paths:
+    - DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi2Se3/mp-23164/volume_1
+    - DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi2Se3/mp-541837/volume_1
+    - DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi4Se3/mp-27607/volume_1
+  # total: 20
+  # seed: 0
+
+# Stage: build_ff_inputs -- JAX-ReaxFF. Cross-products every parse2fit_
+# generation-produced geo/trainset.in variant under parse2fit_root (one per
+# reaxff_run_<i>/ folder) against every blocking_scheme label below (a full
+# cross product, not a 1:1 pairing -- see JaxReaxFF_Integration_Plan.md's
+# sign-off on this), writing reaxff_inputs_dir/<run>_<label>/{geo,
+# trainset.in, params, METADATA} for each combination -- see
+# FF/build_reaxff_ensemble_inputs.py's own docstring for the full design
+# (params-file "blocking scheme": which parameter groups are active/
+# trainable per ensemble member). reaxff_inputs_dir defaults to
+# fine_tuning.inputs_directory when null, so there's one place (not two) to
+# point at where fitting reads from.
+#
+# `ffield` here is used ONLY to read current parameter values for bound-
+# widening (see build_reaxff_ensemble_inputs.py's own docstring for why an
+# activated parameter's bounds need to include its actual starting value,
+# and why the catalog's "n/a" placeholder is never safe to leave on an
+# active line) -- it's never copied anywhere by this stage; the ffield that
+# actually gets fitted is handled separately, via fine_tuning.run_directory.
+# Omit this key to skip bound-widening entirely (catalog bounds used as-is,
+# except "n/a" is still replaced with a wide numeric placeholder --
+# unconditionally required, not optional, since an active "n/a" bound
+# crashes JAX-ReaxFF's own params-file reader regardless of whether a
+# force field was given to widen against).
+#
+# blocking_scheme below is keyed on ReaxFF's own leading section-number
+# convention, confirmed (2026-09-09) by reading the full catalog file --
+# 1=General, 2=Atom, 3=Bond, 4=Off-diagonal, 5=Angular, 6=Dihedral --
+# rather than matching each line's own (inconsistently-named, and for
+# Dihedral entirely absent) `!`-comment text. Every line whose section is
+# in a given label's list is trainable in that ensemble member; every
+# other line is frozen. This is a STARTING SET, not the final word on
+# which combination makes sense scientifically -- General (1) is left out
+# of every label below per direct guidance (most fittings shouldn't touch
+# it; the MACE-shallow-layers analogy is Bond/Angular/Dihedral being the
+# more task-specific "layers" worth training, General being the frozen,
+# broadly-shared foundation) -- add a label including 1 if a given fit
+# genuinely needs it.
+build_ff_inputs:
+  catalog_params: FF/params_template/params
+  parse2fit_root: FF/parse2fit
+  ffield: FF/generation_0/original/ffield
+  blocking_scheme:
+    bonds_only: [3]
+    offdiag_only: [4]
+    angular_only: [5]
+    bonds_and_offdiag: [3, 4]
+    bonds_and_angular: [3, 5]
+    offdiag_and_angular: [4, 5]
+    bonds_offdiag_angular: [3, 4, 5]
+
+# Stage: fit_and_validate. Covers this section plus validation_mirroring,
+# copy_force_fields, MD_single_points, and finite_temperature_md below (all
+# five are read by the one run_fit_and_validate call) -- JAX-ReaxFF
+# ensemble fitting, its reactive per-variant validation single points, and
+# the flat, upfront finite-temperature MD batch, all in one Pipeline/
+# submission.
+# Stage 2 test (JaxReaxFF_Integration_Plan.md): fine_tuning alone, no
+# copy_force_fields/MD_single_points -- run_fit_and_validate treats those
+# two as optional (together) specifically so a fit-only test run like this
+# one doesn't also need validation structures staged. `check_files: [init_FF]`
+# does NOT mean "search for a file literally named init_FF" (a prior version
+# of this comment said so, which was misleading) -- check_files names which
+# of the options keys below (init_FF, whose *value* is 'ffield') get
+# searched for under run_directory; init_FF's value is what
+# FFMatEnsemble._make_proximity_combinations actually searches for.
+# run_directory points directly at the one seed ffield's own directory
+# (generation_0/original, where the staged ffield actually lives), not a
+# broader ancestor -- an unrelated second ffield anywhere under a shared
+# ancestor risks unwanted extra re-fits. Fitted output lands at
+# generation_0/original/<label>/new_FF_<unique_id>_<loss_str> (results_dir
+# is derived from the matched ffield's own directory, not from this config
+# value).
+fine_tuning:
+  run_directory: FF/generation_0/original
+  inputs_directory: FF/reaxff_inputs
+  # ff_task/entry_point name the FF-fitting driver script and its entry-point
+  # function -- same convention as converge_dft_data's dft_task/entry_point.
+  # Porting to a different FF backend means pointing ff_task at a different
+  # driver script with a matching run_<backend>_fit(overrides) entry point,
+  # not touching Ensemble-FF-Fit itself.
+  ff_task: FF/jax_reaxff_fit.py
+  entry_point: run_jax_reaxff_fit
+  # Keys deliberately match driver.py's own argparse attribute names
+  # (init_FF/params/geo/train_file), not MACE-flavored names -- see
+  # jax_reaxff_fit.py's docstring for why.
+  check_files: [init_FF]
+  init_FF: ffield
+  params: params
+  geo: geo
+  train_file: trainset.in
+  finished_file: "new_FF_*"
+  num_tasks: 1
+  cores_per_task: 1
+  gpus_per_task: 1
+
+# Mirrors completed DFT validation results (POSCAR + properties.json) into
+# MD_single_points' inputs_directory before fitting starts -- properties.json
+# here is the DFT ground truth used later for FF ranking, not an MD output.
+## validation_mirroring:
+##  source_root: DFT/validation
+##  dest_root: MD/single_points/validation/lammps_inputs/structures
+##  filenames: [POSCAR, properties.json]
+
+# target_name is what copy_and_spawn_md (run_pipeline.py) renames each
+# fitted force field to at its mirrored destination -- driver.py's own
+# source filename (new_FF_<unique_id>_<loss_str>, resolved via glob at
+# copy time, see copy_and_spawn_md) doesn't need to match this. (`pattern`
+# was present in the MACE-era config but is not actually read anywhere in
+# run_pipeline.py -- select_and_copy uses its own default -- dropped here
+# rather than carried forward as dead, misleading config.)
+## copy_force_fields:
+##  target_directory: MD/single_points/validation/force_fields
+##  target_name: ffield
+
+# No `control` key here -- lammps_reaxff_single_point.py discovers it as a
+# fixed sibling of in_file (MD/single_points/validation/lammps_inputs/control),
+# not as an MDMatEnsemble option (see that driver's docstring for why).
+## MD_single_points:
+##  inputs_directory: MD/single_points/validation/lammps_inputs
+##  check_files: [ffield]
+##  ffield: ffield
+##  in_file: null
+##  structure: POSCAR
+##  finished_file: properties.json
+##  lammps_task: lammps_reaxff_single_point.py
+##  entry_point: run_lammps_single_points
+##  num_tasks: 1
+##  cores_per_task: 1
+## gpus_per_task: 1
+
+# Stage: prepare_reaxff_validation_structures. One-time POSCAR ->
+# structure.lmp conversion for DFT/validation (hexagonal mp-541837 and
+# orthorhombic mp-23164 Bi2Se3 AIMD melting trajectories, aimd/2000K/
+# <mp-id>/single_image/<frame>) and DFT/training (everything else) --
+# needed since in.single_point's `read_data ${structure}` requires LAMMPS
+# data format, not POSCAR. Re-run only if either source tree gains new
+# converged structures (via DFT/vasprun_to_properties.py).
+prepare_reaxff_validation_structures:
+  validation_source_root: DFT/validation
+  validation_dest_root: MD/single_points/reaxff_validation/aimd/lammps_inputs/structures
+  training_source_root: DFT/training
+  training_dest_root: MD/single_points/reaxff_validation/training/lammps_inputs/structures
+  # Copied into both aimd/lammps_inputs/ and training/lammps_inputs/ (the
+  # PARENT of each *_dest_root above, not the structures/ subtree itself)
+  # -- the canonical recipe now lives directly under reaxff_validation/
+  # itself (moved 2026-09 from a separately-named sibling "validation/"
+  # folder, consolidating naming: the recipe source and everything it
+  # produces now share the same top-level name). See
+  # run_prepare_reaxff_validation_structures' own docstring for why
+  # copying these files at all is required, not optional.
+  lammps_recipe_source_dir: MD/single_points/reaxff_validation/lammps_inputs
+  lammps_recipe_files: [in.single_point, control, lammps_reaxff_single_point.py]
+
+# Stage: stage_reaxff_validation_force_fields. Copies+renames every
+# already-fitted force field (new_FF_*, excluding *.txt reports) from
+# fine_tuning.run_directory into BOTH aimd/force_fields and
+# training/force_fields below, each as <same subtree>/ffield -- two
+# separate copies (dest_roots is a list) because validation's and
+# training's LAMMPS runs each write their own properties.json back into
+# whichever run_directory they were staged in, and would silently collide
+# if both single-points batches shared one run_directory.
+reaxff_validation_force_fields:
+  source_root: FF/generation_0/original
+  dest_roots:
+    - MD/single_points/reaxff_validation/aimd/force_fields
+    - MD/single_points/reaxff_validation/training/force_fields
+  target_name: ffield
+
+# Stage: reaxff_validation_single_points. Flat, non-reactive: every staged
+# force field x every structure.lmp, run separately for validation
+# (aimd/2000K's ~668 frames across both trajectories) and training
+# (~150 structures under DFT/training).
+#
+# parent_levels CORRECTED (2026-09, confirmed empirically against the
+# real staged trees, not guessed): an earlier value of 20 was WRONG --
+# "oversized is safe, the merge step handles it" was a bad assumption.
+# batch_by_parent's own get_parent() walks up `parent_levels` directories
+# from each structure's own run_path and groups by whatever that lands
+# on; too LARGE a value walks PAST each force field's own directory and
+# lands on a shared ancestor spanning MULTIPLE force fields, silently
+# merging everything into ONE chore instead of one per force field (this
+# actually happened: 20 collapsed 175 force fields x 668 validation
+# structures into a single 116900-structure chore, confirmed via a direct
+# test sweeping parent_levels against the real staged trees). Validation's
+# own correct range is 3-6 (7+ collapses); training's is 2-3 (4+
+# collapses, since its structures/ tree is shallower and more
+# heterogeneous across subtrees) -- 3 is the one value confirmed correct
+# for BOTH, used below. Re-derive if either structures tree's own nesting
+# changes (e.g. new DFT/training subtrees at a different depth).
+# SCALE NOTE (confirmed, not estimated): 668 validation + 150 training
+# structures, times however many fitted force fields exist under
+# fine_tuning.run_directory (175 at last count) -- with parent_levels
+# correct, this is 175 chores total (not 175x818), each running its own
+# ~818 structures sequentially inside one LAMMPS instance -- worth
+# watching wall-time on the first real run.
+reaxff_validation_single_points:
+  validation:
+    run_directory: MD/single_points/reaxff_validation/aimd/force_fields
+    inputs_directory: MD/single_points/reaxff_validation/aimd/lammps_inputs
+    check_files: [ffield]
+    ffield: ffield
+    in_file: null
+    structure: structure.lmp
+    finished_file: properties.json
+    lammps_task: lammps_reaxff_single_point.py
+    entry_point: run_lammps_single_points
+    parent_levels: 3
+    num_tasks: 1
+    cores_per_task: 16
+    gpus_per_task: 1
+  training:
+    run_directory: MD/single_points/reaxff_validation/training/force_fields
+    inputs_directory: MD/single_points/reaxff_validation/training/lammps_inputs
+    check_files: [ffield]
+    ffield: ffield
+    in_file: null
+    structure: structure.lmp
+    finished_file: properties.json
+    lammps_task: lammps_reaxff_single_point.py
+    entry_point: run_lammps_single_points
+    parent_levels: 3
+    num_tasks: 1
+    cores_per_task: 16
+    gpus_per_task: 1
+
+# Stage: rank_reaxff_validation. Combined ranking -- see
+# EnsembleFFFit.analysis.best_force_field.rank_force_fields_combined's own
+# docstring for the full scheme (relative energy + forces on
+# DFT/validation, forces only on DFT/training). lammps_energy_to_ev
+# assumes in.single_point's `units real` (kcal/mol -> eV, 1 eV =
+# 23.060548867 kcal/mol) -- MUST be recomputed if that units directive
+# ever changes. dest_dir (optional): if given, copies the top
+# number_to_copy force fields forward (e.g. for the next,
+# coordination-number/FT-MD comparison stage) via the same
+# strategy/number_to_copy/seed convention downselect_force_fields used.
+rank_reaxff_validation:
+  validation_ff_dir: MD/single_points/reaxff_validation/aimd/force_fields
+  validation_reference_root: DFT/validation
+  training_ff_dir: MD/single_points/reaxff_validation/training/force_fields
+  training_reference_root: DFT/training
+  validation_energy_weight: 1.0
+  validation_force_weight: 1.0
+  training_force_weight: 1.0
+  lammps_energy_to_ev: 23.060548867
+  dest_dir: MD/single_points/reaxff_validation/selected/force_fields
+  number_to_copy: 25
+  strategy: spread
+  seed: null
+
+# Stage: stage_ft_md_force_fields. Stages EVERY fitted force field from
+# fine_tuning.run_directory (all 175, by explicit choice, confirmed
+# 2026-09 -- running the coordination check against the full ensemble, not
+# just rank_reaxff_validation's top picks, can catch a motif breakdown the
+# static single-point ranking missed) into finite_temperature_md_batch's
+# own force_fields tree, each as <ff_combo>/ffield. See _stage_force_fields
+# in run_pipeline.py (shared with stage_reaxff_validation_force_fields).
+ft_md_force_fields:
+  source_root: FF/generation_0/original
+  dest_roots:
+    - MD/finite_temperature/coordination_check/force_fields
+  target_name: ffield
+
+# Stage: finite_temperature_md_batch. Replaces the old single-foundation-
+# model finite_temperature_md smoke test (below, disabled) for the
+# coordination-stability check: every staged force field (see
+# ft_md_force_fields) x every supercell structure (see
+# sample_ft_md_structures), each run as minimize -> room-temperature-only
+# NPT (in.npt_room_temp -- NOT in.matensemble's full melt/anneal cycle,
+# which is for a different purpose and unnecessary compute here).
+#
+# parent_levels=3 batches one chore per FORCE FIELD (each chore runs all 3
+# named structures for that ffield sequentially on one GPU) -- the user's
+# own sizing (2026-09): single GPU per run, <=25ps NPT after minimization,
+# so a handful of structures per chore should stay cheap.
+#
+# CONFIRMED EMPIRICALLY (2026-09, swept 0-8 against the real staged
+# force_fields/lammps_inputs trees via MDMatEnsemble.build_task_dicts
+# directly, not guessed): 3 through 7 all give exactly 175 chores x 3
+# structures (525 total structures, matches 175 staged ffields x 3 named
+# structures); 0-1 give 525 chores of 1 structure each (the user's own
+# fallback if per-force-field batching turns out to cause problems, e.g.
+# one slow/stuck structure blocking the rest of its ffield's chore -- a
+# config change only, no code change needed); 2 gives 350 mixed-size
+# chores (neither of the above -- confirmed NOT usable); 8 collapses
+# everything into 1 chore (the failure mode reaxff_validation_single_
+# points hit with an oversized value). Re-sweep if either
+# sample_ft_md_structures' or ft_md_force_fields' staged tree depth ever
+# changes.
+finite_temperature_md_batch:
+  run_directory: MD/finite_temperature/coordination_check/force_fields
+  inputs_directory: MD/finite_temperature/coordination_check/lammps_inputs
+  check_files: [ffield]
+  ffield: ffield
+  structure: structure.lmp
+  in_file: in.npt_room_temp
+  lammps_task: lammps_reaxff_md.py
+  entry_point: run_finite_temperature_md
+  finished_file: properties.json
+  parent_levels: 3
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# Stage: check_coordination_stability. Compares each finite_temperature_
+# md_batch run's final structure (data.npt_relax) against its own pre-MD
+# structure.lmp (from sample_ft_md_structures) via pymatgen CrystalNN
+# coordination numbers, site-by-site, per element -- see MD/finite_
+# temperature/coordination_check/cn_checker.py's own docstring for the
+# metric, and run_check_coordination_stability's docstring for why
+# coordination_task/entry_point are dynamically imported (config-swappable
+# metric, matching fine_tuning.ff_task's own convention) rather than a
+# hardcoded import. oxi_dct is REQUIRED by cn_checker.py's CrystalNN
+# weighted-CN approach -- Bi2Se3/Bi4Se3's own formal oxidation states.
+check_coordination_stability:
+  run_directory: MD/finite_temperature/coordination_check/force_fields
+  inputs_directory: MD/finite_temperature/coordination_check/lammps_inputs/structures
+  coordination_task: MD/finite_temperature/coordination_check/cn_checker.py
+  entry_point: check_coordination_stability
+  check_file: data.npt_relax
+  structure: structure.lmp
+  atom_style: charge
+  oxi_dct:
+    Bi: 3
+    Se: -2
+  use_weights: true
+  json_file: MD/finite_temperature/coordination_check/coordination_comparison.json
+  ranking_path: MD/finite_temperature/coordination_check/coordination_ranking.txt

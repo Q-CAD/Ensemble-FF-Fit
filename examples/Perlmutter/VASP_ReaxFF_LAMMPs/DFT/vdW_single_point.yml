@@ -1,0 +1,97 @@
+# VASP recipe for vasp_dft.py -- adapted from
+# logic_locations/VASP/vdW_single_point.yml (the original SLURM/argparse-CLI
+# reference), with the driver-specific keys vasp_dft.py reads directly added
+# alongside the pymatgen input-set keys.
+#
+# CONFIRMED working (2026-09-03, interactive allocation on nid001925/
+# nid002184, matensemble:ff-fit) against vasp/6.4.2-gpu -- see
+# Perlmutter_Build_Order.md's "VASP-in-container: confirmed recipe" section
+# for the full container-launch-level requirements (bind mounts,
+# --network=none, --group-add keep-groups, --gpu) this depends on; those are
+# NOT things this yaml or vasp_dft.py can set themselves, they must be
+# present on the podman-hpc run invocation that starts the chore's
+# container. Switched from vasp/6.4.2-cpu to vasp/6.4.2-gpu: the GPU build
+# ran correctly and noticeably faster in the same raw-executable test, and
+# --gpu is already required at container-launch time regardless (for
+# libcuda.so.1/Flux's own GPU resource discovery), so there's no longer a
+# reason to run the CPU build here. See run_pipeline.py's
+# VASP_LD_LIBRARY_PATH for the corresponding GPU-build library path (the two
+# builds need different NVHPC trees -- 25.9 compilers/math_libs plus a
+# separate 26.5/cuda/13.2 tree for GPU, vs. 26.5-only for CPU).
+
+# Path to the vasp_std binary. Re-verify against `which vasp_std` after
+# `module load vasp/6.4.2-gpu` if the module gets updated (see
+# Perlmutter_Build_Order.md's "VASP module choice" section -- these modules
+# are actively patched).
+vasp_executable: "/global/common/software/nersc9/vasp/vasp/6.4.2-gpu/bin13/vasp_std"
+
+# NOT a bare executable invocation -- vasp_std is RHEL/SLES-built (Cray's
+# toolchain), and its hardcoded ELF interpreter (/lib64/ld-linux-x86-64.so.2)
+# has to be the REAL host loader, not the Ubuntu container's own one at that
+# same path. Confirmed via a hard crash (SIGSEGV, zero output) that a bare
+# invocation silently uses the container's own (wrong) loader, and that this
+# is invisible to a plain `ldd`-style dependency check (which never exercises
+# deep runtime init like TLS setup, where the mismatch actually crashes).
+# The fix: invoke the real loader explicitly, with vasp_std as its argument
+# -- this only affects vasp_std's own invocation, unlike bind-mounting
+# /lib64 directly (which breaks the container's own bash/tools, since the
+# loader and the libc it's paired with have to be the same build). Requires
+# `-v /lib64:/host_lib` at container-launch time (see Perlmutter_Build_Order.md).
+command: "/host_lib/ld-linux-x86-64.so.2 /global/common/software/nersc9/vasp/vasp/6.4.2-gpu/bin13/vasp_std"
+
+structure_filename: "POSCAR"
+
+# Explicit path, not a persistent ~/.pmgrc.yaml -- see vasp_dft.py's
+# docstring for why. Update to your actual POTCAR directory.
+#
+# NOT under /global/homes anymore -- CONFIRMED (2026-09-04): /global/homes
+# is GPFS-automounted on Perlmutter compute nodes (unlike the login node,
+# where it's always resident), and a rootless podman-hpc bind-mount of it
+# does not reliably work from inside the container even after forcing the
+# automount to resolve on the host side first (tried, didn't fix it --
+# likely a permission/UID-mapping quirk specific to /global/homes, not an
+# automount-timing issue per se, since /global/common -- also GPFS, used
+# for VASP's own install tree -- binds successfully via the exact same
+# mechanism elsewhere in this pipeline). Also: this directory was never
+# NERSC's own pseudopotential layout to begin with -- it's a hand-organized
+# copy in pymatgen's own POT_LDA_PAW/POTPAW_PBE_54 naming convention, not
+# VASP's native one, so there was no reason to keep it under a home
+# directory rather than $SCRATCH regardless. Copied to DFT/pymatgen_pseudos
+# (co-located with this yaml, inside run_pipeline/ itself) instead, which
+# resolves via the pipeline's own already-working -v $SCRATCH:$SCRATCH
+# mount -- update this path if you relocate that copy.
+pseudopotentials_directory: "/pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/pymatgen_pseudos"
+potcar_functional: "PBE_54_W_HASH"
+band_multiplier: 0.6
+
+# Which pymatgen.io.vasp.sets.VaspInputSet subclass to build the INCAR/
+# KPOINTS/POTCAR from -- resolved dynamically by name in vasp_dft.py, not
+# hardcoded. Defaults to MPRelaxSet if this key is absent. Any subclass
+# sharing MPRelaxSet's (structure, user_incar_settings=,
+# user_kpoints_settings=, user_potcar_functional=) constructor shape works
+# here (e.g. MPStaticSet, MPScanRelaxSet, MITRelaxSet, MVLRelax52Set,
+# MPMetalRelaxSet) -- specialized sets that need extra prev-run-derived
+# arguments (MPNonSCFSet, MPHSEBSSet, ...) are NOT supported by this
+# generic mechanism.
+input_set: "MPRelaxSet"
+
+# nodes: 0 triggers vasp_resource_estimator's atoms-per-node estimate
+# (run_pipeline.py); a positive value pins the node count instead.
+nodes: 0
+atoms_per_node: 100
+
+user_incar_settings:
+  ALGO: VeryFast
+  EDIFF: 1.0e-05
+  EDIFFG: -0.01
+  ISIF: 3
+  NPAR: 16
+  KPAR: 4
+  ISMEAR: 0
+  SIGMA: 0.03
+  IVDW: 12
+  NSW: 0
+  SYMPREC: 1.0e-06
+  NELM: 250
+user_kpoints_settings:
+  grid_density: 1000

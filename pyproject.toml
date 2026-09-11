@@ -27,7 +27,8 @@ dependencies = [
     # Ensemble-FF-Fit later rather than pulled in as an external dependency.
     # "vaspflux @ git+https://code.ornl.gov/rym/vaspflux.git",
     # "vdW_structures @ git+https://github.com/Q-CAD/HeteroBuilder.git@develop",
-    # "parse2fit @ git+https://code.ornl.gov/rym/parse2fit.git@develop",
+    # parse2fit moved to the `jaxreaxff` extra below (a public GitHub mirror,
+    # not the ORNL GitLab origin here) -- it IS needed for that workflow.
 
     "pymatgen",
     "pymatgen-analysis-defects",
@@ -63,12 +64,29 @@ mace = [
 # vendored in-tree -- DFTMatEnsemble (base.py) and the RMG_MACE_ASE example's
 # DFT/rmg_dft.py driver both import from pyRMG, not a local copy. Pinned to a
 # branch rather than a released version, matching this project's other
-# git-based optional dependencies (see the commented-out vaspflux/parse2fit/
-# vdW_structures entries above) -- repoint at pyRMG's main/develop once
-# updated_MatEnsemble is merged there, rather than leaving this on a
+# git-based optional dependencies (see the commented-out vaspflux/vdW_structures
+# entries above, and the jaxreaxff extra below) -- repoint at pyRMG's main/develop
+# once updated_MatEnsemble is merged there, rather than leaving this on a
 # feature-branch ref long-term.
 rmg = [
     "pyRMG @ git+https://code.ornl.gov/rym/pyrmg.git@updated_MatEnsemble",
+]
+# ReaxFF fitting: the JAX-ReaxFF fork (pinned to its own `develop` branch, which
+# adds pinned GPU dependency versions to that repo's own setup.py plus driver.py/
+# driver_v2.py changes for this pipeline's entry-point contract -- see that repo's
+# own commit history) and parse2fit (DFT-output -> ReaxFF training-format
+# conversion; pulled from its public GitHub mirror, not the ORNL GitLab origin
+# used elsewhere in this file). Both used to be PYTHONPATH-injected from local,
+# actively-edited clones rather than pip-installed at all -- switched to a real
+# install once neither needed further local development. See
+# examples/Perlmutter/VASP_ReaxFF_LAMMPs/README.md for the full pipeline this
+# feeds, and jaxreaxff's own setup.py for why its GPU dependency versions are
+# pinned as tightly as they are (an unpinned resolve drifts to newer releases
+# that break at import time, confirmed via jax's/jax-cuda12-plugin's own PyPI
+# metadata).
+jaxreaxff = [
+    "jaxreaxff @ git+https://github.com/Q-CAD/JAX-ReaxFF.git@develop",
+    "parse2fit @ git+https://github.com/Q-CAD/parse2fit.git",
 ]
 # torch itself is intentionally excluded here too, for the same reason as `mace`
 # above -- run install_gpu_torch.py first.

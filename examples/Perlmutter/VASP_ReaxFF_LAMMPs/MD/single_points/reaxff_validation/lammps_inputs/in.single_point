@@ -1,0 +1,33 @@
+# New template -- no existing single-point LAMMPS/ReaxFF input script
+# existed to adapt (only in.matensemble's finite-temperature MD cycle did).
+# Deliberately does NOT minimize/relax before evaluating -- `run 0` computes
+# forces/energy for the structure exactly as read, matching ase_mace.py's
+# own single-point behavior (never relaxes before calling
+# get_potential_energy()/get_forces()), so FF-vs-DFT comparisons stay
+# apples-to-apples.
+#
+# Variables (ff_filename, structure, control_filename, elements) are set by
+# lammps_reaxff_single_point.py via `lmp.command("variable ... string ...")`
+# before this file is loaded via `lmp.file(...)`.
+
+units real
+dimension 3
+boundary p p p
+atom_style charge
+box tilt large
+processors * * *
+newton on
+neighbor 3.0 bin
+neigh_modify every 1 delay 0 check yes
+
+read_data ${structure}
+
+pair_style reaxff ${control_filename} safezone 3.0 mincap 500
+pair_coeff * * ${ff_filename} ${elements}
+
+fix 1 all qeq/reax 1 0.0 10.0 1.0e-6 reaxff
+
+thermo 1
+thermo_style custom step temp pe epair etotal press pxx pyy pzz lx ly lz vol density
+
+run 0

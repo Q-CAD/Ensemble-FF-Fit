@@ -1,0 +1,371 @@
+# ReaxFF Layout
+
+output_format: 'reaxff' # consistent tag across all .yaml
+
+generation_parameters:
+  runs_to_generate: 25
+  #input_directory: # Not supported
+  #fix_input_weights: False # Not supported
+  #output_directory: 'training_data/runs_kT_like_16_w_ref_EoS'
+  output_directory: '/pscratch/sd/r/rym/MatEnsemble/run_pipeline/FF/parse2fit'
+
+default_weights: # Default is 50/50 0 or 1
+  energy:
+    type: 'magnitude'
+    min: 0.2
+    max: 5.0
+    kT: 70.0
+    scale: 10
+  charges:
+    type: 'binary'
+    min: 0.0
+    max: 0.001
+    split: 0.7
+
+input_paths:
+  # REFERENCES
+  #
+  "mp-23152_supercell_Bi_Reference":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/references/Bi/Bi/mp-23152/
+    energy: True
+
+  "mp-14_supercell_Se_Reference":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/references/Se/Se/mp-14/
+    energy: True
+
+  # REFERENCES
+  #
+  "single_Bi_Reference":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/isolated_elements/Bi
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/references/Bi/Bi/mp-23152/
+      get_divisors: True
+    charges: False
+
+  "mp-23152_Bi":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi/Bi/mp-23152
+    structure:
+      rutype: "CELL OPT 0"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi/Bi/mp-23152/volume_1
+      get_divisors: False
+    charges: False
+
+  "single_Se_Reference":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/isolated_elements/Se
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/references/Se/Se/mp-14/
+      get_divisors: True
+    charges: False
+
+  "mp-14_Se":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Se/Se/mp-14
+    structure:
+      rutype: "CELL OPT 0"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Se/Se/mp-14/volume_1
+      get_divisors: False
+    charges: False
+
+  #EXFOLIATION ENERGIES
+
+  "mp-541837_Bi2Se3_Exfoliation":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/exfoliation/Bi-Se/Bi2Se3/mp-541837/
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/exfoliation/Bi-Se/Bi2Se3/mp-541837/0/spacing_1
+      get_divisors: False
+    charges: False
+
+  "mp-27607_Bi4Se3_Exfoliation":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/exfoliation/Bi-Se/Bi4Se3
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/exfoliation/Bi-Se/Bi4Se3/mp-27607/0/spacing_1
+      get_divisors: False
+    charges: False
+
+  #BULK FORMATION ENERGIES
+  #
+  "Formation_Energies":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/mp_bulk/bulk_sp/
+    structure:
+      rutype: "NORMAL RUN"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/references/Bi/Bi/mp-23152/
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/references/Se/Se/mp-14/
+      get_divisors: True
+    charges: False
+
+  #"mp-541837_Bi2Se3_Formation_Energy":
+  #  directories:
+  #    - training/mp_bulk/bulk_sp/Bi-Se/Bi2Se3/mp-541837/volume_1
+  #  structure:
+  #    rutype: "NORMAL RUN"
+  #  energy:
+  #    subtract:
+  #      - training/references/Bi/Bi/mp-23152/
+  #      - training/references/Se/Se/mp-14/
+  #    get_divisors: True
+  #  charges: False
+
+  #"mp-27607_Bi4Se3_Formation_Energy":
+  #  directories:
+  #    - training/mp_bulk/bulk_sp/Bi-Se/Bi4Se3/mp-27607/volume_1
+  #  structure:
+  #    rutype: "NORMAL RUN"
+  #  energy:
+  #    subtract:
+  #      - training/references/Bi/Bi/mp-23152/
+  #      - training/references/Se/Se/mp-14/
+  #    get_divisors: True
+  #  charges: False
+
+  #Bi-Se Substitutions
+  #
+  "mp-909_Substituted_Bi2Se3_EoS":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/As-Se/rescaled/Bi2Se3/mp-909
+    structure:
+      rutype: "CELL OPT 0"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/As-Se/rescaled/Bi2Se3/mp-909/volume_1
+      get_divisors: False
+    charges: False
+
+  "mp-23164_Bi2Se3_EoS":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/Bi2Se3/mp-23164/
+    structure:
+      rutype: "CELL OPT 0"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/Bi2Se3/mp-23164/volume_1
+      get_divisors: False
+    charges: False
+
+  "mp-541837_Bi2Se3_EoS":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/Bi2Se3/mp-541837/
+    structure:
+      rutype: "CELL OPT 0"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/Bi2Se3/mp-541837/volume_1
+      get_divisors: False
+    charges: False
+
+  "mp-542615_Bi3Se4_EoS":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/Bi3Se4/mp-542615/
+    structure:
+      rutype: "CELL OPT 0"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/Bi3Se4/mp-542615/volume_1
+      get_divisors: False
+    charges: False
+
+  "mp-27607_Bi4Se3_EoS":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/Bi4Se3/mp-27607/
+    structure:
+      rutype: "CELL OPT 0"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/Bi4Se3/mp-27607/volume_1
+      get_divisors: False
+    charges: False
+
+  "mp-27902_BiSe_EoS":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/BiSe/mp-27902/
+    structure:
+      rutype: "CELL OPT 0"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/BiSe/mp-27902/volume_1
+      get_divisors: False
+    charges: False
+
+  "mp-568844_BiSe_EoS":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/BiSe/mp-568844/
+    structure:
+      rutype: "CELL OPT 0"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/eq_of_state/Bi-Se/BiSe/mp-568844/volume_1
+      get_divisors: False
+    charges: False
+
+  #DEFECTS
+  #
+  #"mp-541837_Bi2Se3_Vacancy":
+  #  directories:
+  #    - training/defects/Bi-Se/Bi2Se3/mp-541837/vacancy
+  #  structure:
+  #    rutype: "SINGLE POINT"
+  #  energy:
+  #    weights:
+  #      type: 'magnitude'
+  #      min: 0.2
+  #      max: 0.4
+  #      kT: 80.0
+  #      scale: 30.0
+  #    add:
+  #      - isolated_elements/Bi/
+  #      - isolated_elements/Se/ 
+  #    subtract:
+  #      - training/defects/Bi-Se/Bi2Se3/mp-541837/pristine
+  #    get_divisors: True
+  #  charges: False
+
+  #"mp-541837_Bi2Se3_Interstitial":
+  #  directories:
+  #    - training/defects/Bi-Se/Bi2Se3/mp-541837/interstitial
+  #  structure:
+  #    rutype: "SINGLE POINT"
+  #  energy:
+  #    weights:
+  #      type: 'magnitude'
+  #      min: 0.2
+  #      max: 0.6
+  #      kT: 80.0
+  #      scale: 30.0
+  #    subtract:
+  #      - isolated_elements/Bi/
+  #      - isolated_elements/Se/
+  #      - training/defects/Bi-Se/Bi2Se3/mp-541837/pristine
+  #    get_divisors: True
+  #  charges: False
+   
+  #"mp-541837_Bi2Se3_Antisite_Bi":
+  #  directories:
+  #    - training/defects/Bi-Se/Bi2Se3/mp-541837/antisite/Bi
+  #  structure:
+  #    rutype: "SINGLE POINT"
+  #  energy:
+  #    weights:
+  #      type: 'magnitude'
+  #      min: 0.2
+  #      max: 0.6
+  #      kT: 80.0
+  #      scale: 30.0
+  #    add:
+  #      - isolated_elements/Se/
+  #    subtract:
+  #      - isolated_elements/Bi/
+  #      - training/defects/Bi-Se/Bi2Se3/mp-541837/pristine
+  #    get_divisors: True
+  #  charges: False
+
+  #"mp-541837_Bi2Se3_Antisite_Se":
+  #  directories:
+  #    - training/defects/Bi-Se/Bi2Se3/mp-541837/antisite/Se
+  #  structure:
+  #    rutype: "SINGLE POINT"
+  #  energy:
+  #    weights:
+  #      type: 'magnitude'
+  #      min: 0.2
+  #      max: 0.6
+  #      kT: 80.0
+  #      scale: 30.0
+  #    add:
+  #      - isolated_elements/Bi/
+  #    subtract:
+  #      - isolated_elements/Se/
+  #      - training/defects/Bi-Se/Bi2Se3/mp-541837/pristine
+  #    get_divisors: True
+  #  charges: False
+
+  "mp-27607_Bi4Se3_Vacancy":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/defects/Bi-Se/Bi4Se3/mp-27607/vacancy
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      add:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/isolated_elements/Bi/
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/isolated_elements/Se/
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/defects/Bi-Se/Bi4Se3/mp-27607/pristine
+      get_divisors: True
+    charges: False
+
+  # "mp-541837_Bi2Se3_Interstitial":
+  #  directories:
+  #    - training/defects/Bi-Se/Bi2Se3/mp-541837/interstitial
+  #  structure:
+  #    rutype: "SINGLE POINT"
+  #  energy:
+  #    subtract:
+  #      - isolated_elements/Bi/
+  #      - isolated_elements/Se/
+  #      - training/defects/Bi-Se/Bi2Se3/mp-541837/pristine
+  #    get_divisors: True
+  #  charges: False
+
+  "mp-27607_Bi4Se3_Antisite_Bi":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/defects/Bi-Se/Bi4Se3/mp-27607/antisite/Bi
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      add:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/isolated_elements/Se/
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/isolated_elements/Bi/
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/defects/Bi-Se/Bi4Se3/mp-27607/pristine
+      get_divisors: True
+    charges: False
+
+  "mp-27607_Bi4Se3_Antisite_Se":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/defects/Bi-Se/Bi4Se3/mp-27607/antisite/Se
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      add:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/isolated_elements/Bi/
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/isolated_elements/Se/
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/defects/Bi-Se/Bi4Se3/mp-27607/pristine
+      get_divisors: True
+    charges: False
+  
+  # AMORPHOUS
+  #
+  "Amorphous": 
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/amorphous/
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/run_pipeline/DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi2Se3/mp-541837/volume_1
+      get_divisors: True
