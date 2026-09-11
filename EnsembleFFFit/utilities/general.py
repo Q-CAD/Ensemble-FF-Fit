@@ -3,6 +3,7 @@ import ast
 import os
 import re
 import shutil
+import sys
 from pathlib import Path
 
 
@@ -78,9 +79,23 @@ def import_module_from_path(module_name, path):
     full path -- it lives alongside a run's inputs_directory rather than
     inside the installed EnsembleFFFit package, so a plain `import` won't
     find it.
+
+    Registers the module in sys.modules under module_name BEFORE
+    executing it -- required (not cosmetic), confirmed via a real failure
+    (2026-09): a driver script that uses multiprocessing.Pool internally
+    (e.g. MD/finite_temperature/coordination_check/cn_checker.py) needs
+    its own functions to be re-importable by name in each worker process
+    so they can be unpickled; without this, pickling a function defined
+    in this module raises "PicklingError: import of module '<name>'
+    failed" the moment any dynamically-loaded driver tries to hand a
+    function to a Pool. Matches the standard importlib recipe for
+    executing a spec-loaded module (see importlib's own docs), just not
+    followed here previously since no prior driver script happened to use
+    multiprocessing.
     """
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 

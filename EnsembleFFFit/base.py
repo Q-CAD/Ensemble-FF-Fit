@@ -345,8 +345,24 @@ class MDMatEnsemble(MatEnsembleJob):
             inputs_directory=self.inputs_directory
         )
 
-        # Batch the runs based on the parent level
-        batch_labels = check_files + inputs_directory_keys
+        # Batch the runs based on the parent level. MUST reuse the exact
+        # same label order handed to build_full_runs above (labels=
+        # check_files + structure_keys + recipe_keys), NOT re-derive it
+        # from inputs_directory_keys' own raw order -- CONFIRMED (2026-09)
+        # as a real, previously-latent bug: inputs_directory_keys' order
+        # tracks self.options' own dict-insertion order (whichever of
+        # 'structure'/'in_file' the CALLER happened to list first), while
+        # build_full_runs always returns task_arg_list rows ordered
+        # structure-then-in_file regardless of that. The two silently
+        # agreed only because every caller before finite_temperature_md_
+        # batch either omitted 'in_file' entirely (reaxff_validation_
+        # single_points) or happened to insert 'structure' before
+        # 'in_file'. finite_temperature_md_batch's own options dict lists
+        # 'in_file' before 'structure' (see run_pipeline.py's
+        # _submit_reaxff_single_points_batch), which silently swapped the
+        # 'structure'/'in_file' values in every downstream task_dict --
+        # confirmed via a real chore's own chore.pickle before this fix.
+        batch_labels = check_files + structure_keys + recipe_keys
         task_arg_list, run_paths, make_paths = self.batch_by_parent(task_arg_list, run_paths, batch_labels, parent_levels)
 
         return task_arg_list, run_paths, make_paths, task_command, batch_labels
@@ -427,7 +443,24 @@ class MDMatEnsemble(MatEnsembleJob):
         structures_root's own subpath (e.g. a "structures/" segment) into
         the derived output path. `finished_file` (a glob pattern) skips any
         structure whose output_dir already contains a match.
+
+        Every path this returns is made absolute here, regardless of what
+        the caller passed in -- matching _collect_paths' own
+        os.path.abspath convention elsewhere in this class. This isn't
+        cosmetic: task_dicts get serialized and dispatched to a Flux chore
+        worker process, which is not guaranteed to share this method's
+        caller's own working directory. CONFIRMED as a real bug: a relative
+        structures_root/foundation_model/in_file/output_root resolved fine
+        at build time (in the submitting process), then FileNotFoundError'd
+        inside the actual chore worker when it tried to open the resulting
+        relative structure path.
         """
+        structures_root = os.path.abspath(structures_root)
+        foundation_model = os.path.abspath(foundation_model)
+        in_file = os.path.abspath(in_file) if in_file else in_file
+        output_root = os.path.abspath(output_root)
+        task_command = os.path.abspath(task_command)
+
         struct_dirs = sorted(
             dirpath for dirpath, _, files in os.walk(structures_root) if structure_filename in files
         )
@@ -693,10 +726,13 @@ class DFTMatEnsemble(MatEnsembleJob):
 
     def __init__(self, run_directory, inputs_directory, **kwargs):
         super().__init__(run_directory, inputs_directory, **kwargs)
-        """ DFT self.options keys: 'rmg_yaml' (recipe), a structure-filename key
+        """ DFT self.options keys: 'dft_recipe' (recipe -- an RMG input YAML,
+        a VASP input YAML, etc., backend-dependent), a structure-filename key
         (e.g. 'structure_filename': 'POSCAR'), plus scalar (non-file) config:
         'dft_task', 'entry_point', 'pseudopotentials_directory', 'gpus_per_node',
-        'electrons_per_gpu', 'grid_divisibility_exponent'. """
+        'electrons_per_gpu', 'grid_divisibility_exponent' (all four of the
+        latter are only consulted by the default RMG resource_estimator --
+        see build_dft_dcts). """
 
     def build_full_runs(self, root0: str, files0: list[str],
                     root1: str, files1: list[str],
@@ -844,10 +880,35 @@ class DFTMatEnsemble(MatEnsembleJob):
 
         return batched_tasks, new_run_paths, run_paths
 
-    def build_dft_dcts(self, dft_task, check_files, entry_point, finished_file=None):
+    @staticmethod
+    def _default_rmg_resource_estimator(structure, input_args, options):
+        """
+        Default `resource_estimator` for `build_dft_dcts` -- RMG's own
+        processor-grid-based node-count estimate. Imported lazily (not at
+        module load time) so that a caller supplying its own
+        `resource_estimator` (e.g. a VASP atoms-per-node estimate) never
+        needs `pyRMG` installed at all.
+        """
+        from pyRMG.rmg_input import compute_grid_and_resources
+
+        gpus_per_node = options.get('gpus_per_node', 8)
+        electrons_per_gpu = options.get('electrons_per_gpu', 10)
+        grid_divisibility_exponent = options.get('grid_divisibility_exponent', 3)
+        pseudopotentials_directory = options.get('pseudopotentials_directory', '')
+
+        _, allocated_nodes = compute_grid_and_resources(
+            structure, input_args, target_nodes=0, gpus_per_node=gpus_per_node,
+            electrons_per_gpu=electrons_per_gpu,
+            grid_divisibility_exponent=grid_divisibility_exponent,
+            pseudopotentials_directory=pseudopotentials_directory,
+        )
+        return allocated_nodes
+
+    def build_dft_dcts(self, dft_task, check_files, entry_point, finished_file=None,
+                        resource_estimator=None):
         """
         Build the list of per-run DFT override dicts needed to submit one
-        chore per RMG calculation, using `self.run_directory`/
+        chore per DFT calculation, using `self.run_directory`/
         `self.inputs_directory`/`self.options` (set by `__init__`).
         `dft_task`/`entry_point` name the DFT driver script and its
         entry-point function -- embedded into every returned dict here (not
@@ -864,33 +925,45 @@ class DFTMatEnsemble(MatEnsembleJob):
         directory may have since produced a newer rmg_input.*.log or
         rmg_input) -- the driver script resolves the authoritative structure
         at execution time via pick_structure.pick_best_structure, not here.
+        (A non-RMG driver is free to resolve its own structure however suits
+        it -- this build-time Structure is only ever used for
+        `resource_estimator`, never passed to the driver itself.)
 
-        Also computes 'allocated_nodes', a build-time node-count *estimate*
-        (via rmg_input.compute_grid_and_resources against whichever structure
-        file happens to be on disk right now) purely to size each chore's
-        Resources at submission time. This is only a starting point: if the
-        caller changes the chore's actual node allocation for any reason, it
-        must update this key to match what it actually requested, since
-        RMG.write_input's consistency check (run against the *authoritative*
-        structure, at execution time) compares its own fresh recomputation
-        against exactly this value and raises on mismatch.
+        `resource_estimator(structure, input_args, options) -> allocated_nodes`
+        computes a build-time node-count *estimate*, purely to size each
+        chore's Resources at submission time -- this is only a starting
+        point: if the caller changes the chore's actual node allocation for
+        any reason, it must update 'allocated_nodes' to match what it
+        actually requested, since (for RMG specifically) RMG.write_input's
+        consistency check compares its own fresh recomputation at execution
+        time against exactly this value and raises on mismatch. Defaults to
+        `_default_rmg_resource_estimator` (RMG's processor-grid estimate) so
+        every existing RMG-based caller is unaffected; a different DFT
+        backend (VASP, QE, ...) should pass its own estimator here rather
+        than this class growing backend-specific branches -- e.g. VASP's own
+        atoms-per-node heuristic (see `generate_vasp_flux_cli.py`'s
+        `get_num_nodes`), not RMG's processor-grid search.
 
         Unlike MDMatEnsemble.build_lists (which accepts any number of
         backend-dependent structure-ish option keys), the recipe/structure
-        keys here are fixed to exactly 'rmg_yaml' and 'structure_filename' --
-        the driver script needs to unambiguously recover the bare filename
-        `pick_structure.pick_best_structure` expects (via
+        keys here are fixed to exactly 'dft_recipe' and 'structure_filename'
+        -- 'dft_recipe' is a generic name (an RMG input YAML, a VASP input
+        YAML, etc.), not RMG-specific despite RMG being the first/reference
+        implementation; the driver script needs to unambiguously recover the
+        bare filename e.g. `pick_structure.pick_best_structure` expects (via
         os.path.basename(task_dct['structure_filename'])), which a
         generic multi-key scan (as MD uses) can't guarantee.
         """
         import yaml
         from pymatgen.core import Structure
-        from pyRMG.rmg_input import compute_grid_and_resources
 
-        if 'rmg_yaml' not in self.options or 'structure_filename' not in self.options:
-            raise ValueError("DFTMatEnsemble.options must include 'rmg_yaml' and 'structure_filename'.")
+        if resource_estimator is None:
+            resource_estimator = self._default_rmg_resource_estimator
 
-        recipe_keys = ['rmg_yaml']
+        if 'dft_recipe' not in self.options or 'structure_filename' not in self.options:
+            raise ValueError("DFTMatEnsemble.options must include 'dft_recipe' and 'structure_filename'.")
+
+        recipe_keys = ['dft_recipe']
         structure_keys = ['structure_filename']
 
         labels = check_files + structure_keys + recipe_keys
@@ -902,58 +975,58 @@ class DFTMatEnsemble(MatEnsembleJob):
             run_directory=self.run_directory, inputs_directory=self.inputs_directory,
         )
 
-        rmg_name = self.options.get('rmg_name', 'rmg_input')
-        pseudopotentials_directory = self.options.get('pseudopotentials_directory', '')
-        gpus_per_node = self.options.get('gpus_per_node', 8)
-        electrons_per_gpu = self.options.get('electrons_per_gpu', 10)
-        grid_divisibility_exponent = self.options.get('grid_divisibility_exponent', 3)
-
         dft_dct_list = []
         for task_arg, run_path in zip(task_arg_list, run_paths, strict=True):
             task_dct = dict(zip(labels, task_arg))
-            rmg_yaml = task_dct['rmg_yaml']
+            dft_recipe = task_dct['dft_recipe']
             structure_path = task_dct['structure_filename']
 
             structure = Structure.from_file(structure_path)
-            with open(rmg_yaml, 'r') as f:
+            with open(dft_recipe, 'r') as f:
                 input_args = yaml.safe_load(f)
 
             # This class discovers structure_filename via self.options (this
             # method's own caller-supplied value, e.g. from --structure_filename)
-            # -- but rmg_dft.py resolves it independently at execution time by
-            # reading the *same-named key straight out of this same yaml*,
-            # deliberately, so it stays self-sufficient for standalone testing
-            # without a Pipeline/chore wired around it. Those are two separate
-            # sources of truth for the same concept; if they disagree, every
-            # task built here will silently discover files under one name but
-            # then fail deep inside a chore ("No usable structure found ...")
-            # under the other. Catching the mismatch here, before any chore is
-            # submitted, is a lot clearer than that failure mode.
+            # -- but a driver script (rmg_dft.py, vasp_dft.py, ...) may resolve
+            # it independently at execution time by reading the *same-named
+            # key straight out of this same yaml*, deliberately, so it stays
+            # self-sufficient for standalone testing without a Pipeline/chore
+            # wired around it. Those are two separate sources of truth for the
+            # same concept; if they disagree, every task built here will
+            # silently discover files under one name but then fail deep inside
+            # a chore ("No usable structure found ...") under the other.
+            # Catching the mismatch here, before any chore is submitted, is a
+            # lot clearer than that failure mode. (A driver that always uses a
+            # fixed structure_filename convention rather than reading it back
+            # out of the recipe yaml is unaffected -- this only bites drivers
+            # that opt into the same self-sufficiency pattern RMG's does.)
             yaml_structure_filename = input_args.get('structure_filename', 'POSCAR')
             if yaml_structure_filename != self.options['structure_filename']:
                 raise ValueError(
-                    f"{rmg_yaml} sets structure_filename={yaml_structure_filename!r}, but this run was "
+                    f"{dft_recipe} sets structure_filename={yaml_structure_filename!r}, but this run was "
                     f"built with structure_filename={self.options['structure_filename']!r} (e.g. via "
-                    f"--structure_filename) -- rmg_dft.py will use the yaml's value at execution time, "
-                    f"not this one, so every task built here would fail there. Update the yaml to match, "
-                    f"or pass --structure_filename to match the yaml."
+                    f"--structure_filename) -- the driver script may use the yaml's value at execution "
+                    f"time, not this one, so every task built here could fail there. Update the yaml to "
+                    f"match, or pass --structure_filename to match the yaml."
                 )
 
-            _, allocated_nodes = compute_grid_and_resources(
-                structure, input_args, target_nodes=0, gpus_per_node=gpus_per_node,
-                electrons_per_gpu=electrons_per_gpu,
-                grid_divisibility_exponent=grid_divisibility_exponent,
-                pseudopotentials_directory=pseudopotentials_directory,
-            )
+            allocated_nodes = resource_estimator(structure, input_args, self.options)
 
+            # rmg_name/pseudopotentials_directory/gpus_per_node/electrons_per_gpu/
+            # grid_divisibility_exponent are DELIBERATELY not re-embedded here --
+            # they're only ever inputs to _default_rmg_resource_estimator (via
+            # self.options.get(...) above, already consumed by the
+            # resource_estimator(...) call on the line above this comment), never
+            # read back out of the returned dict by anything: run_individual only
+            # ever extracts working_directory/dft_recipe before dispatching to the
+            # driver script (RMG's or VASP's), and run_pipeline.py's own callers
+            # only ever read allocated_nodes/structure_filename from what this
+            # returns. Embedding RMG-specific keys here unconditionally, for every
+            # backend, used to be dead weight in the dict at best -- confirmed
+            # nothing downstream reads them for any backend, RMG included.
             dft_dct_list.append({
                 **task_dct,
                 'working_directory': os.path.normpath(run_path),
-                'rmg_name': rmg_name,
-                'pseudopotentials_directory': pseudopotentials_directory,
-                'gpus_per_node': gpus_per_node,
-                'electrons_per_gpu': electrons_per_gpu,
-                'grid_divisibility_exponent': grid_divisibility_exponent,
                 'allocated_nodes': allocated_nodes,
                 'dft_task': dft_task,
                 'entry_point': entry_point,
@@ -970,16 +1043,16 @@ class DFTMatEnsemble(MatEnsembleJob):
         mechanism as MDMatEnsemble.run_individual, and the same
         list-of-positional-args calling convention (e.g. entry_point(ffield,
         structure, output) there): here, entry_point(working_directory,
-        rmg_yaml), each wrapped in a singleton list since build_dft_dcts
+        dft_recipe), each wrapped in a singleton list since build_dft_dcts
         (unlike MD's batch_by_parent) never batches multiple jobs into one
-        task_dict. Everything else the driver needs (pseudopotentials_dir via
-        RMG's own 'pseudo_dir' keyword, gpus_per_node/electrons_per_gpu/
-        grid_divisibility_exponent/rmg_name/rmg_executable/command/
-        structure_filename/allocated_nodes) is read directly out of the
-        rmg_yaml file by the driver script itself -- see
-        test/RMG_testing/rmg_dft.py.
+        task_dict. Everything else the driver needs (pseudopotentials_dir,
+        gpus_per_node/electrons_per_gpu/grid_divisibility_exponent (RMG-only)/
+        rmg_name/rmg_executable/command/structure_filename/allocated_nodes,
+        or their VASP/other-backend equivalents) is read directly out of the
+        dft_recipe file by the driver script itself -- see e.g.
+        examples/*/DFT/rmg_dft.py or DFT/vasp_dft.py.
         """
         module_name = Path(task_dict['dft_task']).stem
         driver = import_module_from_path(module_name, task_dict['dft_task'])
         entry_point = getattr(driver, task_dict['entry_point'])
-        return entry_point([task_dict['working_directory']], [task_dict['rmg_yaml']])
+        return entry_point([task_dict['working_directory']], [task_dict['dft_recipe']])

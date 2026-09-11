@@ -5,6 +5,7 @@ import json
 
 from pymatgen.core import Structure
 from pymatgen.io.vasp import Vasprun
+from tqdm import tqdm
 
 
 class DirectoryParser(ABC):
@@ -97,7 +98,8 @@ class ASEParser(DirectoryParser):
         """
         full_dct = {}
 
-        for root, _, _ in os.walk(self.directory_to_parse):
+        for root, _, _ in tqdm(os.walk(self.directory_to_parse),
+                                desc=f"Parsing {self.directory_to_parse}", unit="dir"):
             root = Path(root)
 
             try:
@@ -158,12 +160,87 @@ class VASPParser(DirectoryParser):
         """
         full_dct = {}
 
-        for root, _, _ in os.walk(self.directory_to_parse):
+        for root, _, _ in tqdm(os.walk(self.directory_to_parse),
+                                desc=f"Parsing {self.directory_to_parse}", unit="dir"):
             root = Path(root)
 
             try:
                 vasprun_path = self.existence_check(root)
                 energy, fx, fy, fz, structure = self.get_property_values(vasprun_path)
+            except ValueError:
+                continue
+
+            label, run, image = self.naming_convention(root, label_tuple)
+
+            self._nested_set(
+                full_dct,
+                [label, run, image],
+                {
+                    "energy": energy,
+                    "structure": structure,
+                    "fx": fx,
+                    "fy": fy,
+                    "fz": fz,
+                },
+            )
+
+        return full_dct
+
+
+class PropertiesOnlyParser(DirectoryParser):
+    """
+    Like ASEParser, but requires only properties.json -- no co-located
+    structure file. Needed for MDMatEnsemble-style single-point output
+    (e.g. reaxff_validation_single_points): its run_directory/
+    inputs_directory split means a chore's own output leaf
+    (run_directory/<...>/properties.json) never has a structure file
+    sitting next to it at all -- the structure.lmp/POSCAR lives entirely
+    separately, under inputs_directory. CONFIRMED (2026-09) as a real bug
+    ASEParser hit here, not theoretical: its existence_check requiring
+    both properties.json AND POSCAR silently skipped every single leaf
+    under such a tree, since POSCAR is never present there, producing a
+    fully empty parsed dict with no error -- exactly the shape of failure
+    that later crashed downselect_force_fields.select_and_copy with
+    "IndexError: list index out of range" (an empty label list, indexed
+    into as if it had entries).
+
+    get_property_values returns structure=None always -- callers that
+    need real per-image Structure objects should use ASEParser (or
+    VASPParser) instead; this parser is for energy/force-only consumers
+    (e.g. best_force_field.rank_force_fields_combined).
+    """
+    def existence_check(self, root: Path):
+        """Return the properties.json path if it exists under root, else raise ValueError."""
+        properties_path = root / "properties.json"
+        if properties_path.exists():
+            return properties_path
+        raise ValueError
+
+    def get_property_values(self, properties_path):
+        """Load energy/forces from properties.json; structure is always None."""
+        with open(properties_path) as f:
+            data = json.load(f)
+        return (
+            data["energy"],
+            data["fx"],
+            data["fy"],
+            data["fz"],
+            None,
+        )
+
+    def parse_directory(self, label_tuple):
+        """Walk the directory tree applying `naming_convention`, `existence_check`,
+        and `get_property_values` to build the nested properties dict, skipping
+        entries where `existence_check` raises ValueError."""
+        full_dct = {}
+
+        for root, _, _ in tqdm(os.walk(self.directory_to_parse),
+                                desc=f"Parsing {self.directory_to_parse}", unit="dir"):
+            root = Path(root)
+
+            try:
+                properties_path = self.existence_check(root)
+                energy, fx, fy, fz, structure = self.get_property_values(properties_path)
             except ValueError:
                 continue
 
