@@ -4,15 +4,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-EnsembleFFFit coordinates data- and time-efficient fine-tuning of interatomic potentials/force-fields
-(currently MACE; JAX-ReaxFF support is on hold, see `TODO.md`) by fitting an *ensemble* of models
-against ab initio (DFT) data, using adaptive asynchronous job scheduling (MatEnsemble, an external sibling
-package) plus on-the-fly uncertainty quantification (UQ) to decide what new training data to generate
-next. It now also drives the DFT convergence step itself (RMG, via the `pyRMG` package -- see below), not
-just the fitting/UQ side — see `examples/Frontier/RMG_MACE_ASE/` for the full loop. It targets HPC
-clusters — historically NERSC Perlmutter (SLURM + Cray `cc`/`CC`/`ftn` compilers, CUDA GPUs), now also
-OLCF Frontier (ROCm/AMD GPUs) via a MatEnsemble+Flux container. LAMMPS itself (with Python bindings) is
-expected to be provided by that container on both systems, not built or pip-installed by this project.
+EnsembleFFFit coordinates data- and time-efficient fine-tuning of interatomic potentials/force-fields by
+fitting an *ensemble* of models against ab initio (DFT) data, using adaptive asynchronous job scheduling
+(MatEnsemble, an external sibling package) plus on-the-fly uncertainty quantification (UQ) to decide what
+new training data to generate next. Three FF-fitting backends are demonstrated end-to-end, all through the
+same generic `FFMatEnsemble`/driver-script contract (see `base.py` below) rather than any backend-specific
+class: **MACE** (`examples/Frontier/RMG_MACE_ASE/`), **JAX-ReaxFF** (`examples/Perlmutter/
+VASP_ReaxFF_LAMMPs/`), and **ACE**/pyace (`examples/HPC_aas/QE_ACE/`). It also drives the DFT convergence
+step itself, again via the same generic `DFTMatEnsemble`/driver-script contract across three DFT codes:
+**RMG** (via the `pyRMG` package — see below), **VASP**, and **Quantum Espresso**. It targets HPC
+clusters — historically NERSC Perlmutter (SLURM + Cray `cc`/`CC`/`ftn` compilers, CUDA GPUs), OLCF Frontier
+(ROCm/AMD GPUs), and now also ORNL's Pathfinder HPC-as-a-Service offering (SLURM + Apptainer, CUDA GPUs,
+Flux bootstrapped over PMIx rather than Cray PMI2) — via a MatEnsemble+Flux container on each. LAMMPS
+itself (with Python bindings) is expected to be provided by that container where MD is actually run through
+it, not built or pip-installed by this project; Pathfinder's own container does not currently have LAMMPS's
+`ML-PACE` package built in, so ACE MD there goes through a plain-ASE driver instead (CPU-only, single-core
+per trajectory — see `examples/HPC_aas/QE_ACE/README.md`'s pitfalls section).
 
 Companion projects it depends on (not vendored here, resolved as normal `pyproject.toml` dependencies):
 `MatEnsemble` (Flux-based async task execution; pinned as a version check against the container's
@@ -31,9 +38,17 @@ python install_gpu_torch.py                     # step 1: detect ROCm/CUDA, inst
 pip install -e ".[mace,cuda]"                    # step 2: backend extra + platform extra, combined as needed
 ```
 
-See **README.md's Installation section** for the full set of extras (`mace`, `torchsim` × `cuda`, `rocm`)
-and example combinations — not duplicated here. A few implementation notes worth knowing
-if you're touching this area:
+See **README.md's Installation section** for the full set of extras (`mace`, `jaxreaxff`, `ace`,
+`torchsim` × `cuda`, `rocm`) and example combinations — not duplicated here. A few implementation notes
+worth knowing if you're touching this area:
+
+- `ace` (pyace/pacemaker) has no PyPI release, pins a git ref, and compiles native CMake C++ extensions at
+  pip-install time — cap parallelism explicitly (`CMAKE_BUILD_PARALLEL_LEVEL=2 pip install -e ".[ace]"`)
+  on a shared/memory-constrained host, or its `setup.py`'s own `os.cpu_count()-1` default can exhaust
+  memory. Deliberately does *not* pull in `tensorpotential` (pacemaker's GPU/TensorFlow evaluator) — its
+  own `setup.py` requires Python <3.11, incompatible with this project's Python 3.12 containers; pyace's
+  native, CPU-only evaluator (the default if `backend.evaluator` is omitted from a pacemaker `input.yaml`)
+  is used instead everywhere in this repo.
 
 - `install_gpu_torch.py` fails loudly (non-zero exit, clear message) rather than guessing if it can't
   confidently detect the platform, or if it detects signals for *both* ROCm and CUDA. Its `PLATFORM_MAP`
@@ -108,12 +123,20 @@ or consumes its outputs. Both live at the top of the `EnsembleFFFit` package (no
     and dispatches to its named entry point, exactly like `MDMatEnsemble`/`DFTMatEnsemble`, rather than
     calling `mace.cli.run_train.run` directly itself. All the actual MACE-fitting logic now lives in
     `examples/Frontier/RMG_MACE_ASE/FF/mace_fit.py`, not here — porting to a different FF backend later
-    means writing a new driver script with the same entry-point contract, no `base.py` changes.
-    JAX-ReaxFF support (previously `JaxReaxFFMatEnsemble`) is removed from this branch, not ported into
-    `FFMatEnsemble` — see `TODO.md`.
-  - `DFTMatEnsemble` — the RMG DFT backend; `build_dft_dcts` sizes each structure's node/GPU footprint
-    (see the `pyRMG` section below), `run_individual` dispatches to a site-specific driver
-    script (e.g. `rmg_dft.py`) by path/entry-point, same convention as `MDMatEnsemble`/`FFMatEnsemble`.
+    means writing a new driver script with the same entry-point contract, no `base.py` changes. Two other
+    backends already prove this out: JAX-ReaxFF (`JaxReaxFFMatEnsemble`, the old backend-specific class,
+    is genuinely gone — but JAX-ReaxFF fitting itself is back, through this same generic contract, via
+    `examples/Perlmutter/VASP_ReaxFF_LAMMPs/FF/jax_reaxff_fit.py`) and ACE/pyace (via
+    `examples/HPC_aas/QE_ACE/FF/ace_fit.py`, calling `pyace.generalfit.GeneralACEFit` directly — see
+    `EnsembleFFFit/potential/ace/` for the shared ensemble-input-building/dataset-conversion utilities
+    those two examples' own `build_ff_inputs` stages call, analogous to `potential/mace/`'s).
+  - `DFTMatEnsemble` — `build_dft_dcts` sizes each structure's node/GPU footprint, `run_individual`
+    dispatches to a site-specific driver script (e.g. `rmg_dft.py`/`vasp_dft.py`/`qe_dft.py`) by
+    path/entry-point, same convention as `MDMatEnsemble`/`FFMatEnsemble`. Three DFT backends are
+    demonstrated: RMG (see the `pyRMG` section below), VASP (`examples/Perlmutter/VASP_ReaxFF_LAMMPs/`),
+    and Quantum Espresso (`examples/HPC_aas/QE_ACE/`, via ASE's own `EspressoTemplate`/`EspressoProfile` —
+    evaluated and rejected `pymatgen-io-espresso` first, since it was pre-alpha with no documented
+    pseudopotential-resolution support at the time).
 - **`in_queue.py`** is a separate SLURM-level helper (`sbatch` submission, `squeue` polling, sentinel-file
   based done/fail detection, auto-resubmission) operating one level above MatEnsemble's in-job Flux task
   distribution. It has no callers anywhere in this repo (its only caller was an example notebook that has
@@ -122,16 +145,20 @@ or consumes its outputs. Both live at the top of the `EnsembleFFFit` package (no
 **Why the three subclasses' input-passing conventions deliberately differ, not just historically drifted
 apart** — each one's rigidity (or lack of it) tracks how much variation is actually expected across real
 backends for that concern:
-  - `DFTMatEnsemble.options` is fixed to exactly `rmg_yaml` + `structure_filename`, full stop — but unlike
-    `MDMatEnsemble`'s fixed shape below, this isn't because only one DFT backend is expected: VASP,
-    Quantum Espresso, and possibly Gaussian (for molecular systems) are all planned. It's fixed because
-    "structure file + recipe/config file" is expected to keep working as a generic contract *across* those
-    codes — pymatgen/ASE already have solid input-generation support for VASP/QE/Gaussian-like codes, so
-    a structure+config pair should suffice for each without `DFTMatEnsemble` itself needing to change.
-    RMG is the outlier here, not the norm: it's obscure enough that it needed genuinely bespoke, hand-written
-    support (the `pyRMG` package, an optional dependency) rather than leaning on existing Python DFT
-    tooling the way VASP/QE/Gaussian are expected to. If a future DFT code turns out *not* to fit the structure+config
-    shape, that's the point to revisit whether this class needs to generalize — not before.
+  - `DFTMatEnsemble.options` is fixed to exactly one recipe-file key (named per backend: `rmg_yaml`/
+    `vasp_incar`/`qe_yaml`, whichever `DFTMatEnsemble.build_dft_dcts`'s caller sets as `dft_recipe`) plus
+    `structure_filename`, full stop — but unlike `MDMatEnsemble`'s fixed shape below, this was never
+    because only one DFT backend was expected: VASP and Quantum Espresso are now both demonstrated
+    end-to-end (`examples/Perlmutter/VASP_ReaxFF_LAMMPs/`, `examples/HPC_aas/QE_ACE/`), and Gaussian (for
+    molecular systems) remains a plausible future addition. It's fixed because "structure file +
+    recipe/config file" keeps working as a generic contract *across* those codes — pymatgen/ASE already
+    have solid input-generation support for VASP/QE/Gaussian-like codes, so a structure+config pair
+    suffices for each without `DFTMatEnsemble` itself needing to change (confirmed twice now, not just
+    once). RMG is the outlier here, not the norm: it's obscure enough that it needed genuinely bespoke,
+    hand-written support (the `pyRMG` package, an optional dependency) rather than leaning on existing
+    Python DFT tooling the way VASP/QE/Gaussian-like codes do. If a future DFT code turns out *not* to fit
+    the structure+config shape, that's the point to revisit whether this class needs to generalize — not
+    before.
   - `MDMatEnsemble.options` is backend-dependent (`ffield`/`in_file`/`control`/`structure` for LAMMPS, a
     different set for ASE/TorchSim) but still funnels into the same small, *fixed* positional shape at the
     `run_individual`/driver-script boundary (`ffield`, `structure`, `output`, `in_file` — four slots, always
@@ -182,6 +209,17 @@ convergence status. `pyRMG.valence`/`pyRMG.forcefield` handle pseudopotential va
 force-field-format output. See `examples/Frontier/RMG_MACE_ASE/README.md` for the full container/build/
 launch story around actually running `rmg-gpu` — that operational knowledge lives there, not here.
 
+### VASP and Quantum Espresso DFT backends — no bespoke package needed, unlike RMG
+
+Both lean entirely on existing, mature Python DFT tooling rather than needing anything like `pyRMG`:
+`EnsembleFFFit/density_functional_theory/vasp/vasp_dft.py` wraps `vaspflux`
+(`examples/Perlmutter/VASP_ReaxFF_LAMMPs/`); `EnsembleFFFit/density_functional_theory/qe/qe_dft.py` uses
+ASE's own `ase.calculators.espresso.EspressoTemplate`/`EspressoProfile` (`examples/HPC_aas/QE_ACE/`) — ASE
+was picked over `pymatgen-io-espresso` after actually checking it first (pre-alpha, no PyPI release, no
+documented pseudopotential-resolution support at the time). Both, like `rmg_dft.py`, are package-level
+*reference* copies only — each deployment's own `dft_task` points at its own hand-kept-in-sync copy under
+that example's own `DFT/` folder, same convention throughout.
+
 ### `potential/mace/` and `molecular_dynamics/{ase,lammps,torchsim}/` — per-backend drivers
 
 `molecular_dynamics/` mirrors `potential/`/`density_functional_theory/`'s per-backend-folder convention —
@@ -214,6 +252,15 @@ generic by-path loader, not a `pyMD` import).
 - `potential/mace/build_ensemble_inputs.py`/`write_training_xyz.py` are the current, actively-used MACE
   training-input builders. `potential/mace/create_lammps_models_cli.py` (moved from `utilities/`, since
   it's MACE-specific) needs the `mace` extra despite being a core-registered console script; see `TODO.md`.
+- `potential/ace/build_ace_dataset.py`/`build_ace_ensemble_inputs.py` are ACE's own equivalents —
+  `build_ace_dataset.write_ace_dataset` converts converged DFT output into pyace's own `.pckl.gzip`
+  training-DataFrame format (energy/forces/`energy_corrected`, the isolated-atom-E0-subtracted cohesive
+  energy pyace actually fits against — see `examples/HPC_aas/QE_ACE/README.md` if a fitted potential's
+  raw energies look wildly different from DFT's own raw totals; that offset is why),
+  `build_ace_ensemble_inputs.build_ace_ensemble_inputs` samples the seed/`kappa` ensemble grid into
+  numbered `input.yaml` folders, one shared dataset file per ensemble rather than MACE's three
+  per-member files. `potential/reaxff/build_reaxff_ensemble_inputs.py` is JAX-ReaxFF's own analogous
+  ensemble-input builder.
 
 ### `structures/` — training-structure generation CLIs
 
@@ -248,13 +295,30 @@ each ensemble member's RMSE against DFT ground truth, driving which force field 
 
 ### `examples/`
 
-`examples/Frontier/RMG_MACE_ASE/` is a full worked walkthrough of the current pipeline on OLCF Frontier —
-RMG DFT convergence → MACE ensemble fitting/validation → ASE finite-temperature MD sampling → UQ-based
-downselection of next-round DFT candidates — driven by a single `run_pipeline.py`/`workflow_config.yaml`
-pair via the `Pipeline`/`@pipe.chore` pattern described above. It's a trimmed copy of a real, working run
-(structures + driver/recipe scripts only, no run output, foundation model fetched separately — see its own
-`README.md`), and is the closest thing this repo has to an integration test and to end-user-facing usage
-documentation. Read it before changing pipeline-stage interfaces.
+Three full worked walkthroughs, each a trimmed copy of a real, working run (structures + driver/recipe
+scripts only, no run output — see each one's own `README.md` for exactly what's excluded and why),
+together the closest thing this repo has to an integration test and to end-user-facing usage
+documentation. Read the relevant one before changing pipeline-stage interfaces.
+
+- **`examples/Frontier/RMG_MACE_ASE/`** (OLCF Frontier, ROCm) — RMG DFT convergence → MACE ensemble
+  fitting/validation → ASE finite-temperature MD sampling → UQ-based downselection of next-round DFT
+  candidates. The most complete loop of the three (the only one with active-learning downselection wired
+  up end-to-end); foundation model fetched separately, not committed (~80MB checkpoint).
+- **`examples/Perlmutter/VASP_ReaxFF_LAMMPs/`** (NERSC Perlmutter, CUDA) — VASP DFT convergence →
+  JAX-ReaxFF ensemble fitting/validation → LAMMPS finite-temperature MD + single-point validation.
+  Demonstrates `DFTMatEnsemble`/`FFMatEnsemble` against a second DFT code and a second FF-fitting
+  backend, both through the exact same generic contract MACE/RMG use.
+  Multi-node launch (`launch_multi_node.slurm`) also lives here.
+- **`examples/HPC_aas/QE_ACE/`** (ORNL Pathfinder, CUDA, Apptainer) — Quantum Espresso DFT convergence →
+  pyACE ensemble fitting → CPU-only single-point re-evaluation against the DFT training set. A third DFT
+  code and a third FF-fitting backend, same contract again. Deliberately doesn't attempt
+  active-learning downselection or finite-temperature MD as a real demonstration yet — the training set
+  is intentionally tiny (2 structures, a smoke test of the pipeline plumbing, not of FF quality), and its
+  own README documents, with a real number, why that's currently too undertrained for MD to stay stable
+  at all. All-CPU by design: Pathfinder's GPU partition is capacity-constrained, `pw.x` has no GPU build
+  there yet, and pyACE's own GPU evaluator needs Python <3.11 (incompatible with this project's Python 3.12
+  containers) — see its README's pitfalls section for what was actually checked (not assumed) before
+  settling on CPU-only.
 
 ## Security note
 

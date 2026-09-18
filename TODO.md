@@ -14,16 +14,19 @@ extra in `pyproject.toml` (`torch-sim-atomistic`) is a separate opt-in for exact
 once Torch Sim is standardized in those environments; until then, calling `make_prop_calculators` with a
 mapping that includes `"kinetic_energy"` or `"temperature"` will raise `NameError`.
 
-## JAX-ReaxFF support removed from this branch (not ported into `FFMatEnsemble`)
+## JAX-ReaxFF support — resolved (back, via the generic `FFMatEnsemble` contract, not a revived `JaxReaxFFMatEnsemble`)
 
-`potential/reaxff/` (`jaxreaxff_matensemble_cli.py`, `JaxReaxFFMatEnsemble`) and the `reaxff`
-`pyproject.toml` extra have been deleted outright on this branch, per explicit decision — the upstream
-optimizer is deprecated by its own developers, and `FFMatEnsemble` (the `MACEMatEnsemble` generalization,
-see below) is deliberately a clean wrapper with no backend-specific logic, so there was nothing worth
-preserving here to generalize against. JAX-ReaxFF fitting may be needed again for a future paper; if so,
-pull the relevant logic back from the `main`/`Claude` branches (where it still exists) rather than
-reconstructing it from memory, and give it its own driver script under the `FFMatEnsemble` pattern rather
-than reviving `JaxReaxFFMatEnsemble`/`MatEnsembleJob.run()`.
+The old backend-specific class (`JaxReaxFFMatEnsemble`, `jaxreaxff_matensemble_cli.py`) is still gone —
+correctly so, per the decision below to delete it rather than generalize against dead
+`MatEnsembleJob.run()`-based code. But JAX-ReaxFF fitting itself is back on this branch, through exactly
+the pattern that decision anticipated: `examples/Perlmutter/VASP_ReaxFF_LAMMPs/FF/jax_reaxff_fit.py` is a
+driver script under `FFMatEnsemble`'s existing generic contract (same shape as `mace_fit.py`/`ace_fit.py`),
+pointed at by `fine_tuning.ff_task`/`entry_point` in that example's `workflow_config.yaml` — no `base.py`
+changes needed. `potential/reaxff/` now holds `build_reaxff_ensemble_inputs.py` (the package-level
+ensemble-input builder, analogous to `potential/mace/`/`potential/ace/`) and a package-level reference
+copy of the fitting driver, `jax_reaxff_fit.py`. The `jaxreaxff` `pyproject.toml` extra (`jaxreaxff` +
+`parse2fit`, from `Q-CAD`'s own GitHub mirrors) is live. Confirmed working end-to-end against the
+`VASP_ReaxFF_LAMMPs` example, not just re-added on faith.
 
 ## `CLAUDE.md` Architecture section staleness — resolved
 
@@ -220,3 +223,43 @@ deleted outright rather than migrated — confirmed orphaned (nothing referenced
 `examples/Frontier/RMG_MACE_ASE/`; recoverable from git history if ever needed. Confirmed via a full
 repo-wide import search before moving/deleting anything that nothing outside `pyMD/` itself ever
 referenced it.
+
+## Pathfinder QE/ACE pipeline (`examples/HPC_aas/QE_ACE/`) — still open
+
+Surfaced building/validating this example end-to-end (see its own README's pitfalls section for the
+already-resolved issues); these are the ones still genuinely open, not yet decided/fixed.
+
+- **No TorchSim example anywhere in this repo yet**, despite `torchsim` being a real, installable extra.
+  The original plan for this example was QE (DFT) -> pyACE (fitting) -> TorchSim (GPU MD) — TorchSim was
+  dropped partway through once it became clear (checked directly, not assumed) that TorchSim's own model
+  zoo has no ACE entry and no generic "wrap an arbitrary ASE calculator as a batched GPU model" bridge, so
+  it couldn't do anything for ACE specifically that plain ASE + `PyACECalculator` doesn't already do,
+  just without the GPU. A real TorchSim example (most plausibly MACE-based, since TorchSim's own model
+  zoo is built around MACE-shaped GNN potentials) is still worth doing as its own thing — nothing here
+  demonstrates the `torchsim` extra actually working end-to-end yet.
+- **LAMMPS on Pathfinder's container has no `ML-PACE` package built in** — confirmed via
+  `lammps.lammps().installed_packages`. This blocks the two things that would actually make ACE MD
+  competitive with MACE-on-GPU for long-timescale/large-supercell dynamics: real MPI domain-decomposed
+  parallelism (pyace's own native evaluator has no internal thread parallelism at all — confirmed via
+  `ldd` — so a plain-ASE MD driver is single-core, full stop) and much larger systems than fit comfortably
+  in one process's memory. Building LAMMPS here with `-DPKG_ML-PACE=yes` linked against pyace's own C++
+  library is the natural next step before attempting a real (not toy-scale) ACE MD demonstration.
+- **Multi-rank MPI under Flux on Pathfinder is untested/confirmed-not-working**, not just unconfigured —
+  real multi-rank `pw.x` (multiple MPI ranks cooperating on one calculation) was tried directly and
+  ranks silently fell back to independent singletons rather than actually communicating; a genuine
+  Flux/PMIx-interop gap (Pathfinder's OpenMPI 5.0.5 bootstraps via PMIx, unlike Frontier's Cray MPICH/PMI2
+  or Perlmutter's stack), not chased to a root cause. Blocks any DFT structure needing more than one
+  node's worth of k-point-pool parallelism, and blocks a LAMMPS-ML-PACE MD demo from actually using more
+  than one node too, once that's built.
+- **The QE_ACE training set is a 2-structure smoke test, not a real force field.** Confirmed directly (not
+  assumed): even a colder, shorter MD sanity check on the current 6-member ensemble diverges within
+  ~100-200 steps regardless of starting temperature. There's also no held-out validation set yet — every
+  `single_points` result checks a fit against data it was trained on, not generalization. Both need
+  addressing (more DFT structures across more of Si's configuration space; a genuine train/validation
+  split, mirroring `DFT/validation/` in the other two examples) before this pipeline demonstrates anything
+  about force-field *quality*, as opposed to demonstrating that the *plumbing* works.
+- **No GPU path exists for ACE anywhere in this repo.** pyace's own GPU evaluator (`tensorpotential`)
+  needs Python <3.11, incompatible with every container this project currently builds (all Python 3.12).
+  Getting GPU-accelerated ACE (fitting or MD) would need either a separate, older-Python sidecar
+  environment just for that evaluator, or accepting CPU-only ACE as a permanent characteristic of this
+  backend rather than a temporary gap — worth deciding explicitly rather than leaving implicit.
