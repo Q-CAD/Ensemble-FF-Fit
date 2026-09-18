@@ -1,9 +1,4 @@
 # Enviroment build scripts
-jaxreaxff_build/
-base_build/
-lammps_build/
-mace_freeze_build/
-unified_build/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -122,3 +117,8 @@ dmypy.json
 # Pyright type checker
 .pyright/
 
+
+# Pseudopotential binaries -- sourced by users themselves (e.g. from
+# PSlibrary/SSSP), not committed; see each QE-based example's README for
+# the exact file(s) it expects under its own qe_pseudos/.
+*.UPF

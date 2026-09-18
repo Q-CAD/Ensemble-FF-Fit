@@ -41,6 +41,24 @@ PLATFORM_MAP = {
         "torchaudio": "2.6.0",
         "index_url": "https://download.pytorch.org/whl/cu124",
     },
+    # Added for the Pathfinder QE/pyACE/TorchSim pipeline -- cuda12.4's torch==2.6.0
+    # is too old for torch-sim-atomistic (its required nvalchemi-toolkit-ops[torch]
+    # dependency pins torch>=2.8.0; installing the `torchsim` extra against the
+    # cuda12.4 pin silently drags pip's resolver up to an unpinned, untested
+    # torch==2.14.0+cu13 stack instead of erroring, which is exactly the failure
+    # mode this script exists to avoid -- see pipeline/FRICTION_LOG.md). Verified
+    # against https://download.pytorch.org/whl/cu126/{torch,torchvision,torchaudio}/
+    # on 2026-09-14, cross-checked via each wheel's data-upload-time (torch/torchaudio
+    # share the same version number and torchvision's minor tracks 1:1 -- 2.9.0/2.9.0/
+    # 0.24.0 and 2.10.0/2.10.0/0.25.0 both uploaded same-day, confirming 2.11.0/2.11.0/
+    # 0.26.0 as the corresponding triplet). cu126 (not a newer cu12x/cu13x index) chosen
+    # to match Pathfinder's own `cuda/12.6.3` module.
+    "cuda12.6": {
+        "torch": "2.11.0",
+        "torchvision": "0.26.0",
+        "torchaudio": "2.11.0",
+        "index_url": "https://download.pytorch.org/whl/cu126",
+    },
 }
 
 

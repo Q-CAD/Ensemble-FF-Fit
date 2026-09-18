@@ -1,0 +1,151 @@
+# Single config for run_pipeline.py. TorchSim MD stages get added here in
+# later rounds of this build-out, same convention as the Frontier/Perlmutter
+# examples' workflow_config.yaml. Run from this directory (pipeline/) so
+# relative paths below resolve correctly:
+#
+#   python run_pipeline.py --config workflow_config.yaml --stage converge_dft_data
+#   python run_pipeline.py --config workflow_config.yaml --stage build_ff_inputs
+#   python run_pipeline.py --config workflow_config.yaml --stage fit_and_validate
+
+# Stage: converge_dft_data. Submits one pw.x chore per (structure,
+# single_point.yml) pair under `directory`, run as a single MPI rank per
+# chore (see run_pipeline.py's module docstring for why -- Pathfinder's
+# PMIx-based MPI bootstrap under Flux is untested, deliberately deferred).
+converge_dft_data:
+  directory: DFT
+  dft_task: DFT/qe_dft.py
+  structure_filename: POSCAR
+  qe_yaml_name: single_point.yml
+  entry_point: run_qe_calculation
+  check_files: [qe_yaml]
+  finished_file: properties.json
+  cores_per_task: 4
+  max_tasks_per_job: 1
+  # pw.x is CPU-only on Pathfinder right now -- explicit 0 rather than
+  # relying on run_pipeline.py's own default, so switching to a GPU-enabled
+  # QE build later is just changing this one value, not touching code.
+  gpus_per_task: 0
+
+# Stage: build_ff_inputs. Builds FF/ace_dataset/si.pckl.gzip from converged
+# QE data (DFT/training + DFT/isolated_elements), then a randomly-sampled
+# ensemble of pyace input.yaml folders under FF/ace_inputs, varying seed +
+# kappa (fit.loss's energy-vs-force weight). cores_per_task here MUST match
+# fine_tuning.cores_per_task below by hand -- it's baked into each
+# ensemble member's own input.yaml (backend.n_workers) at THIS build time,
+# not re-read from fine_tuning at fit time (see run_pipeline.py's own
+# run_build_ff_inputs docstring for why this matters: pyace's own
+# parallel_mode='process' default has no idea what subset of a node's cores
+# Flux actually gave a chore).
+build_ff_inputs:
+  dft_root: DFT
+  dataset_path: FF/ace_dataset/si.pckl.gzip
+  ace_inputs_dir: FF/ace_inputs
+  training_subpath: training
+  isolated_elements_subpath: isolated_elements
+  structure_filename: POSCAR
+  elements: [Si]
+  seeds: [0, 1, 2]
+  kappa_grid_kwargs:
+    kappa_range: [0.5, 0.99]
+    kappa_num: 3
+  total_cap: 6
+  seed: 0
+  cores_per_task: 4
+
+# Stage: fit_and_validate. Submits one ACE-fitting chore per ensemble input
+# folder built by build_ff_inputs, via FFMatEnsemble -- deliberately
+# simpler than the MACE example's own fit_and_validate (no reactive
+# validation-spawn strategy, no finite-temperature MD batch yet). Fitted
+# potentials land at FF/ace_dataset/<i>/FF_<i>.yaml.
+fine_tuning:
+  run_directory: FF/ace_dataset
+  inputs_directory: FF/ace_inputs
+  ff_task: FF/ace_fit.py
+  entry_point: run_ace_fit
+  check_files: [dataset]
+  dataset: si.pckl.gzip
+  config: input.yaml
+  finished_file: null
+  num_tasks: 1
+  cores_per_task: 4
+  gpus_per_task: 0
+
+# Stage: molecular_dynamics. Submits one MD chore per (fitted ACE
+# potential, structure) pair -- every FF/ace_dataset/<i>/FF_<i>.yaml x
+# every structure under structures_root, via MD/ace_md.py (a plain-ASE,
+# CPU-only Langevin/VelocityVerlet driver using pyace's own
+# PyACECalculator). cores_per_task is deliberately 1: pyace's native
+# evaluator has no internal thread parallelism (confirmed via `ldd`, see
+# pipeline/FRICTION_LOG.md), so a single trajectory can't use more than
+# one core -- bumping cores_per_task here would only reduce how many
+# chores fit on a node at once, not speed anything up. gpus_per_task is 0
+# for the same reason ase_mace.py's own MACE driver isn't used here:
+# PyACECalculator has no GPU path at all (pyace's only GPU backend,
+# tensorpotential/TensorFlow, is already confirmed incompatible with this
+# project's Python 3.12 containers).
+molecular_dynamics:
+  ff_root: FF/ace_dataset
+  ff_glob: 'FF_*.yaml'
+  # Paths below nested under MD/finite_temperature/ase_inputs/ -- moved
+  # there (structures/ included) to mirror MD/single_points' own ase_inputs/
+  # wrapping convention, and to make room for MD/single_points/ itself (see
+  # the copy_force_fields/mirror_training_structures/single_points sections
+  # below). Not re-run since this stage was moved -- structures/Si_bulk/
+  # POSCAR was regenerated (same ase.build.bulk call as originally) rather
+  # than actually lost, since the move otherwise dropped it.
+  structures_root: MD/finite_temperature/ase_inputs/structures
+  structure_filename: POSCAR
+  md_recipe: MD/finite_temperature/ase_inputs/md.yml
+  md_task: MD/finite_temperature/ase_inputs/ace_md.py
+  entry_point: run_ace_md
+  output_root: MD/finite_temperature/runs
+  finished_file: md_run.traj
+  num_tasks: 1
+  cores_per_task: 1
+  gpus_per_task: 0
+
+# Stage: copy_force_fields. Copies FF/ace_dataset/<i>/FF_<i>.yaml ->
+# MD/single_points/force_fields/<i>/FF.yaml (uniform filename per folder --
+# required for single_points' own build_task_dicts call to work at all, see
+# run_copy_force_fields's own docstring). Re-run whenever the ensemble is
+# refit; single_points itself only ever reads from force_fields/, never
+# FF/ace_dataset directly.
+copy_force_fields:
+  source_directory: FF/ace_dataset
+  target_directory: MD/single_points/force_fields
+  pattern: 'FF_.*\.yaml'
+  target_name: FF.yaml
+
+# Stage: mirror_training_structures. Mirrors DFT/training's own completed
+# leaves (POSCAR + properties.json) into
+# MD/single_points/ase_inputs/training. Mirrors the *training* set here,
+# not a held-out validation set like the MACE example's own
+# validation_mirroring does -- this project has no separate validation
+# structures yet (explicitly noted when this stage was requested), so the
+# single points below are "how well does each fit reproduce the data it was
+# trained on," not a true held-out check.
+mirror_training_structures:
+  source_root: DFT/training
+  dest_root: MD/single_points/ase_inputs/training
+  filenames: [POSCAR, properties.json]
+
+# Stage: single_points. Submits one chore per fitted force field, each
+# covering both training structures (parent_levels: 1 -- confirmed against
+# this project's own two-level-deep force_fields/<i>/training/<name> task-
+# dir shape, not copied from the MACE example's own parent_levels: 8, which
+# was tuned to a much deeper UQ-frame tree). cores_per_task/gpus_per_task
+# match molecular_dynamics' own reasoning: PyACECalculator is single-core,
+# CPU-only, no internal thread parallelism (see pipeline/FRICTION_LOG.md).
+single_points:
+  run_directory: MD/single_points/force_fields
+  inputs_directory: MD/single_points/ase_inputs
+  ffield: FF.yaml
+  structure: POSCAR
+  single_point_task: ace_single_point.py
+  entry_point: run_ase_single_points
+  parent_levels: 1
+  check_files: [ffield]
+  finished_file: properties.json
+  num_tasks: 1
+  cores_per_task: 1
+  gpus_per_task: 0

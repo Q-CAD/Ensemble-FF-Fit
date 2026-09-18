@@ -1,0 +1,56 @@
+# Isolated-atom-specific copy of DFT/single_point.yml (used for the
+# training/ bulk structures) -- same functional/cutoffs/pseudopotential for
+# a consistent reference energy, but with electrons.diagonalization: cg
+# added. CONFIRMED (2026-09-17) necessary, not precautionary: the default
+# Davidson diagonalization crashed (MPI_ABORT, errorcode 21, no QE-level
+# error message) partway through the first SCF iteration for this isolated
+# atom, most likely from Davidson's own growing trial-vector subspace
+# exceeding this login node's per-process memory limit (isolated-atom
+# calculations are comparatively memory-heavy for how few electrons they
+# have, since avoiding periodic self-interaction needs a large vacuum box --
+# and a correspondingly large FFT grid -- around just one atom). CG
+# diagonalization has much lower memory overhead (no expanding subspace) and
+# converged cleanly. DFTMatEnsemble's own proximity-matching picks whichever
+# recipe file is nearest a given structure in the directory tree, so this
+# file only affects structures under isolated_elements/ -- the shared
+# DFT/single_point.yml (Davidson, unmodified) still applies to every
+# training/ structure, unaffected by this override. Keep both files' shared
+# settings (ecutwfc/ecutrho/pseudopotentials/functional) in sync by hand if
+# either changes -- there's no automated mechanism enforcing that.
+#
+# system.nbnd: also CONFIRMED necessary, found right after the diagonalization
+# fix above -- with QE's own default band count (6 for this pseudopotential's
+# Zval=4.0), the first SCF iteration crashed with "Error in routine efermig
+# (1): internal error, cannot bracket Ef". Well-known QE failure mode for
+# few-electron/isolated-atom systems: too few empty bands near the occupied
+# ones for Gaussian smearing to find any partial occupation the Fermi-level
+# bisection can converge on. Explicit nbnd=8 (a couple more empty bands than
+# the default) fixed it.
+structure_filename: POSCAR
+qe_executable: /software/baseline/nsp/spack-envs/base-25.05/opt/gcc-12.4.0/quantum-espresso-7.4-wwlqcxiopwbadoarm4v7obftaphxegaq/bin/pw.x
+command: /host_lib64/ld-linux-x86-64.so.2 /software/baseline/nsp/spack-envs/base-25.05/opt/gcc-12.4.0/quantum-espresso-7.4-wwlqcxiopwbadoarm4v7obftaphxegaq/bin/pw.x
+pseudopotentials_directory: /opt/pipeline/DFT/qe_pseudos
+pseudopotentials: {}
+input_data:
+  control:
+    calculation: scf
+    tprnfor: true
+    tstress: true
+  system:
+    ecutwfc: 40
+    ecutrho: 320
+    occupations: smearing
+    smearing: gaussian
+    degauss: 0.1
+    nbnd: 8
+  electrons:
+    conv_thr: 1.0e-08
+    diagonalization: cg
+    mixing_beta: 0.3
+    electron_maxstep: 300
+kspacing: 0.3
+koffset:
+- 0
+- 0
+- 0
+atoms_per_node: 100

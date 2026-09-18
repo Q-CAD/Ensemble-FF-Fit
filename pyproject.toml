@@ -88,6 +88,28 @@ jaxreaxff = [
     "jaxreaxff @ git+https://github.com/Q-CAD/JAX-ReaxFF.git@develop",
     "parse2fit @ git+https://github.com/Q-CAD/parse2fit.git",
 ]
+# ACE (Atomic Cluster Expansion) fitting via pyace/pacemaker, pinned to a git
+# ref (not a PyPI release -- none exists) same as rmg/jaxreaxff above.
+# Deliberately NOT installing `tensorpotential` (pacemaker's GPU-accelerated,
+# TensorFlow-based `tensorpot` evaluator) alongside this -- its own setup.py
+# declares `python_requires='<3.11'`, incompatible with this project's
+# Python 3.12 containers. Use pyace's own native, CPU-only `pyace` evaluator
+# (`backend: evaluator: pyace` in a pacemaker input.yaml -- also the default
+# if `backend.evaluator` is omitted) instead; see pipeline/FRICTION_LOG.md
+# for the Pathfinder pipeline this was worked out against.
+#
+# Compiles native CMake C++ extensions (plus a Cython-built lib/maxvolpy
+# sub-library) at pip-install time -- needs a real build toolchain
+# (gcc/cmake/Cython) available, same risk class as the `rocm` extra's
+# openequivariance requirement above. CONFIRMED (2026-09-17): the build's
+# own setup.py hardcodes `os.cpu_count() - 1` parallel compile jobs unless
+# CMAKE_BUILD_PARALLEL_LEVEL is already set -- on a shared login node this
+# over-parallelizes and exhausts memory ("cc1plus: out of memory", `-j31`
+# on a 32-core node). Install with a capped value, e.g.:
+#   CMAKE_BUILD_PARALLEL_LEVEL=2 pip install -e ".[ace]"
+ace = [
+    "pyace @ git+https://github.com/ICAMS/python-ace.git",
+]
 # torch itself is intentionally excluded here too, for the same reason as `mace`
 # above -- run install_gpu_torch.py first.
 torchsim = [

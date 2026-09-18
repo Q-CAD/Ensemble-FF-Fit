@@ -1,0 +1,11 @@
+# Shared MD recipe for MD/ace_md.py's run_ace_md -- see that module's own
+# docstring for what each key means. Kept as one shared file (cross-
+# producted against every structure/potential, same convention as
+# single_point.yml for QE), not one copy per run.
+ensemble: nvt
+temperature_K: 300.0
+friction: 0.02
+timestep_fs: 1.0
+nsteps: 2000
+traj_interval: 100
+seed: 42
