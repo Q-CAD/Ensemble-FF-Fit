@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from multiprocessing import Pool
 from pathlib import Path
 import os
 import json
@@ -261,17 +262,60 @@ class PropertiesOnlyParser(DirectoryParser):
         return full_dct
 
 
-def parse_labeled_tree(root, parser_cls=ASEParser):
+def _parse_one_label_subtree(args):
+    """
+    Pool worker: parse ONE immediate child directory of a labeled tree's
+    root (one force-field variant's own subtree) -- see
+    parse_labeled_tree's own docstring for why this is a safe,
+    embarrassingly-parallel split (same reasoning as
+    relative_energy_comparison.py's own per-run multiprocessing: every
+    label's subtree is independent file I/O, no shared state, and
+    label_tuple is computed from the ORIGINAL root -- not recomputed
+    relative to this child -- so naming_convention still slices out the
+    same label/run/image parts it would have from one big sequential
+    walk over the whole tree).
+    """
+    parser_cls, child_dir, label_tuple = args
+    return parser_cls(child_dir).parse_directory(label_tuple=label_tuple)
+
+
+def parse_labeled_tree(root, parser_cls=ASEParser, num_processes=None):
     """
     Parse `root` treating the immediate child directory name as the label
     -- e.g. a force-field variant number/name -- giving
     {label: {run: {image: props}}}. label_tuple is computed from root's own
     resolved depth, not hardcoded, so this works regardless of where the
     tree lives on disk.
+
+    num_processes (optional, default None i.e. sequential -- the original,
+    unchanged behavior): if set >1, each immediate child of root (one
+    label's own subtree) is parsed in its own multiprocessing.Pool worker
+    instead of one single sequential os.walk over the entire tree. Added
+    (2026-10) once this became the real bottleneck for large ensembles --
+    the dominant cost is per-structure file I/O (properties.json/POSCAR
+    reads), repeated once per label, so this scales near-linearly with
+    available cores. Each label contributes its own, non-colliding
+    top-level key, so merging results back together is a plain dict
+    update, not a deep merge.
     """
     root = str(Path(root).resolve())
     base_depth = len(Path(root).parts)
-    return parser_cls(root).parse_directory(label_tuple=(base_depth, base_depth + 1))
+    label_tuple = (base_depth, base_depth + 1)
+
+    if not num_processes or num_processes <= 1:
+        return parser_cls(root).parse_directory(label_tuple=label_tuple)
+
+    children = sorted(p for p in Path(root).iterdir() if p.is_dir())
+    if not children:
+        return {}
+    tasks = [(parser_cls, str(child), label_tuple) for child in children]
+
+    full_dct = {}
+    with Pool(processes=min(num_processes, len(tasks))) as pool:
+        for result in tqdm(pool.imap_unordered(_parse_one_label_subtree, tasks),
+                            total=len(tasks), desc=f"Parsing {root}", unit="label"):
+            full_dct.update(result)
+    return full_dct
 
 
 def parse_reference_tree(root, parser_cls=ASEParser):

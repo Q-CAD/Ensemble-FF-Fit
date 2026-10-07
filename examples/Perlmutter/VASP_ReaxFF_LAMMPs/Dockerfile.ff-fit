@@ -1,0 +1,48 @@
+FROM docker.io/nersc/flux:26.05
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV PATH=/opt/basic/bin:$PATH
+
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-dev libglu1-mesa-dev mesa-utils
+
+# clone MatEnsemble
+WORKDIR /opt
+RUN git clone --depth 1 https://github.com/Q-CAD/MatEnsemble.git matensemble && \
+    cd matensemble && \
+    uv export --format requirements.txt --no-hashes --no-emit-project --output-file requirements.txt && \
+    /opt/basic/bin/python -m pip install -r requirements.txt && \
+    /opt/basic/bin/python -m pip install --no-deps .
+
+# Install JAX-ReaxFF (GPU dependency versions pinned in that repo's own
+# setup.py -- jax[cuda12]==0.4.35, jax_md, dm-haiku, etc. -- see its commit
+# history) and parse2fit, baked into the image itself rather than
+# installed live at container-launch time -- CONFIRMED (2026-09) necessary,
+# not a style choice: /opt/basic/lib/python3.12/site-packages lives
+# entirely inside the container's own filesystem, not any host-mounted
+# path, so a `pip install` done inside one ephemeral `podman-hpc run --rm`
+# container vanishes the moment that container exits and is invisible to
+# every other chore's own separately-launched container. Both used to be
+# PYTHONPATH-injected from local, actively-edited clones instead (see git
+# history / examples/Perlmutter/VASP_ReaxFF_LAMMPs/README.md for that
+# story) -- switched to a real image-baked install once neither needed
+# further local development.
+RUN /opt/basic/bin/python -m pip install \
+    "jaxreaxff @ git+https://github.com/Q-CAD/JAX-ReaxFF.git@develop" \
+    "parse2fit @ git+https://github.com/Q-CAD/parse2fit.git@develop"
+
+# jax_md (one of JAX-ReaxFF's own pinned dependencies, see its setup.py)
+# declares `Requires-Dist: dataclasses` with NO python_version marker --
+# unlike jmp/ml_collections' own correctly-scoped `; python_version <
+# "3.7"` -- so pip installs the PyPI `dataclasses==0.6` backport
+# unconditionally, even on this image's Python 3.12. That backport is a
+# literal dataclasses.py in site-packages, which SHADOWS the stdlib
+# dataclasses module -- breaking every @dataclass use downstream
+# (scipy -> pymatgen -> parse2fit) AND pip itself (pip's own vendored
+# rich console hits @dataclass at import time). CONFIRMED (2026-10) via a
+# real build: pip show/uninstall both crash the same way once this
+# exists, so it can't be cleaned up with a later `pip uninstall` layer --
+# removed directly here instead, while pip itself still works.
+RUN rm -f /opt/basic/lib/python3.12/site-packages/dataclasses.py && \
+    rm -rf /opt/basic/lib/python3.12/site-packages/dataclasses-0.6.dist-info

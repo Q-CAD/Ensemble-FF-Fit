@@ -14,12 +14,25 @@
 #   python run_pipeline.py --config workflow_config.yaml --stage stage_ft_md_force_fields
 #   python run_pipeline.py --config workflow_config.yaml --stage finite_temperature_md_batch
 #   python run_pipeline.py --config workflow_config.yaml --stage check_coordination_stability
+#   python run_pipeline.py --config workflow_config.yaml --stage select_next_generation_force_field
 #   python run_pipeline.py --config workflow_config.yaml --stage all
 #
 # An earlier UQ/active-learning loop (downselect -> uq_single_points ->
 # select_dft_candidates) has been removed entirely -- see run_pipeline.py's
 # own module docstring for why (the JAX-ReaxFF ensemble fits here weren't
 # judged reliable enough yet to drive that kind of active selection).
+
+# generation_number: which fitting generation THIS config's stages operate
+# on -- every per-generation FF/MD default path below (run_pipeline.py's
+# _gen_default helper) is generation_{this}/... . Every explicit path
+# below already matches generation_number: 0; bump both together (the
+# explicit paths always override the default, so changing this key alone
+# does nothing) when moving to the next generation -- a fresh config that
+# OMITS those path keys gets the generation-separated layout for free.
+# select_next_generation_force_field (bottom of this file) is what
+# produces generation_1's own starting seed once this generation's fits
+# are ranked and coordination-checked.
+generation_number: 0
 
 # Stage: converge_dft_data. Submits one VASP chore per (structure, vasp_yaml)
 # pair under `directory`, sized per-job from its own computed
@@ -62,8 +75,21 @@ converge_dft_data:
 # reaxff_newest_kT.yml's own output_directory (FF/, already absolute)
 # governs where its runs_to_generate geo/trainset.in variant folders
 # actually land, not anything in this section.
+# reaxff_newest_kT.yml (magnitude weighting), reaxff_newest_norm.yml
+# (normal weighting), and reaxff_newest_bin.yml (binary weighting) are
+# three sibling directives sharing identical input_paths -- only the
+# energy weighting scheme and output_directory differ (each writes to
+# its own FF/generation_0/parse2fit[_norm|_bin], so all three can be run
+# and compared side by side without colliding). Defaulting to normal
+# weighting here since it's the one that performed best in an earlier
+# investigation (more top-ranked fits downstream than magnitude or binary
+# weighting at the same parameter-sampling scheme) -- swap yaml_directive
+# (and build_ff_inputs.parse2fit_root below, to match) to compare again
+# against this dataset/blocking scheme. parse2fit YAML directives bake in
+# absolute paths by design, not templated by run_pipeline.py itself --
+# see run_parse2fit_generation's own docstring for why.
 parse2fit_generation:
-  yaml_directive: DFT/reaxff_newest_kT.yml
+  yaml_directive: DFT/reaxff_newest_norm.yml
 
 # Stage: sample_ft_md_structures. Selects starting structures for
 # finite_temperature_md. source_root defaults to converge_dft_data.
@@ -107,17 +133,10 @@ sample_ft_md_structures:
   supercell_kwargs:
     min_atoms: 100
     min_length: 12.0
-  # Relative, not absolute -- CHANGED (2026-09, during migration into this
-  # example): these used to be hardcoded to the original investigation's
-  # own absolute path, which broke the moment this directory moved.
-  # _copy_starting_structures resolves each entry via Path(p).resolve()
-  # against CWD, so relative paths work fine here as long as run_pipeline.py
-  # is run from this directory (same convention every other path in this
-  # file already follows).
   named_paths:
-    - DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi2Se3/mp-23164/volume_1
-    - DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi2Se3/mp-541837/volume_1
-    - DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi4Se3/mp-27607/volume_1
+    - /pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi2Se3/mp-23164/volume_1
+    - /pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi2Se3/mp-541837/volume_1
+    - /pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/DFT/training/mp_bulk/bulk_sp/Bi-Se/Bi4Se3/mp-27607/volume_1
   # total: 20
   # seed: 0
 
@@ -160,16 +179,59 @@ sample_ft_md_structures:
 # genuinely needs it.
 build_ff_inputs:
   catalog_params: FF/params_template/params
-  parse2fit_root: FF/parse2fit
-  ffield: FF/generation_0/original/ffield
-  blocking_scheme:
-    bonds_only: [3]
-    offdiag_only: [4]
-    angular_only: [5]
-    bonds_and_offdiag: [3, 4]
-    bonds_and_angular: [3, 5]
-    offdiag_and_angular: [4, 5]
-    bonds_offdiag_angular: [3, 4, 5]
+  # Generation 0's own starting seed: 1_10199, an already-validated
+  # reference potential (see FF/generation_0/1_10199/ffield) -- not the
+  # bare, unfitted catalog seed some earlier investigations started from.
+  # parse2fit_root matches whichever DFT/reaxff_newest_*.yml is active
+  # above (parse2fit_generation.yaml_directive) -- its own output_directory
+  # decides this path, not anything here; keep the two in sync by hand if
+  # you switch schemes (reaxff_newest_kT.yml -> FF/generation_0/parse2fit,
+  # reaxff_newest_norm.yml -> .../parse2fit_norm, reaxff_newest_bin.yml ->
+  # .../parse2fit_bin -- see each yml's own generation_parameters.
+  # output_directory).
+  parse2fit_root: FF/generation_0/parse2fit_norm
+  ffield: FF/generation_0/1_10199/ffield
+  reaxff_inputs_dir: FF/generation_0/reaxff_inputs
+  # Restrict to 2 of the 25 parse2fit seeds -- increase this yourself if
+  # you want more ensemble diversity.
+  parse2fit_seed_runs: [reaxff_run_0, reaxff_run_1]
+  # Bond/Off-diagonal/Angular, each independently sampled (own pool, own
+  # label_prefix -- a single fit's unblocked parameters stay within ONE
+  # section, not mixed, so performance differences stay attributable to a
+  # specific parameter class) and capped at max_params=3. An earlier,
+  # coarser version of this scheme (an entire section activated at once)
+  # let ReaxFF's angular force constants move 7-18x their starting value
+  # during fitting, severely degrading LAMMPS-reax/c agreement relative to
+  # the unfitted seed potential -- capping how many parameters move at
+  # once isolates which ones are actually safe to free (see
+  # sample_parameter_subsets' own docstring in build_reaxff_ensemble_
+  # inputs.py). Off-diagonal's catalog only has 4 real JAX-ReaxFF-mapped
+  # parameters (14 distinct subsets of size 1-3 total) -- far fewer than
+  # Bond's 24 or Angular's 30 -- so n_variants=75 there is automatically
+  # reduced to an exhaustive enumeration of all 14 instead of a sample
+  # padded with duplicates.
+  sampled_blocking:
+    - section: 3
+      n_variants: 75
+      min_params: 1
+      max_params: 3
+      stratify: true
+      seed: 42
+      label_prefix: bond_section3_sample
+    - section: 4
+      n_variants: 75
+      min_params: 1
+      max_params: 3
+      stratify: true
+      seed: 42
+      label_prefix: offdiag_section4_sample
+    - section: 5
+      n_variants: 75
+      min_params: 1
+      max_params: 3
+      stratify: true
+      seed: 42
+      label_prefix: angular_section5_sample
 
 # Stage: fit_and_validate. Covers this section plus validation_mirroring,
 # copy_force_fields, MD_single_points, and finite_temperature_md below (all
@@ -187,15 +249,15 @@ build_ff_inputs:
 # searched for under run_directory; init_FF's value is what
 # FFMatEnsemble._make_proximity_combinations actually searches for.
 # run_directory points directly at the one seed ffield's own directory
-# (generation_0/original, where the staged ffield actually lives), not a
+# (generation_0/1_10199, where the staged ffield actually lives), not a
 # broader ancestor -- an unrelated second ffield anywhere under a shared
 # ancestor risks unwanted extra re-fits. Fitted output lands at
-# generation_0/original/<label>/new_FF_<unique_id>_<loss_str> (results_dir
+# generation_0/1_10199/<label>/new_FF_<unique_id>_<loss_str> (results_dir
 # is derived from the matched ffield's own directory, not from this config
 # value).
 fine_tuning:
-  run_directory: FF/generation_0/original
-  inputs_directory: FF/reaxff_inputs
+  run_directory: FF/generation_0/1_10199
+  inputs_directory: FF/generation_0/reaxff_inputs
   # ff_task/entry_point name the FF-fitting driver script and its entry-point
   # function -- same convention as converge_dft_data's dft_task/entry_point.
   # Porting to a different FF backend means pointing ff_task at a different
@@ -283,10 +345,10 @@ prepare_reaxff_validation_structures:
 # whichever run_directory they were staged in, and would silently collide
 # if both single-points batches shared one run_directory.
 reaxff_validation_force_fields:
-  source_root: FF/generation_0/original
+  source_root: FF/generation_0/1_10199
   dest_roots:
-    - MD/single_points/reaxff_validation/aimd/force_fields
-    - MD/single_points/reaxff_validation/training/force_fields
+    - MD/generation_0/single_points/reaxff_validation/aimd/force_fields
+    - MD/generation_0/single_points/reaxff_validation/training/force_fields
   target_name: ffield
 
 # Stage: reaxff_validation_single_points. Flat, non-reactive: every staged
@@ -318,7 +380,7 @@ reaxff_validation_force_fields:
 # watching wall-time on the first real run.
 reaxff_validation_single_points:
   validation:
-    run_directory: MD/single_points/reaxff_validation/aimd/force_fields
+    run_directory: MD/generation_0/single_points/reaxff_validation/aimd/force_fields
     inputs_directory: MD/single_points/reaxff_validation/aimd/lammps_inputs
     check_files: [ffield]
     ffield: ffield
@@ -332,7 +394,7 @@ reaxff_validation_single_points:
     cores_per_task: 16
     gpus_per_task: 1
   training:
-    run_directory: MD/single_points/reaxff_validation/training/force_fields
+    run_directory: MD/generation_0/single_points/reaxff_validation/training/force_fields
     inputs_directory: MD/single_points/reaxff_validation/training/lammps_inputs
     check_files: [ffield]
     ffield: ffield
@@ -348,27 +410,57 @@ reaxff_validation_single_points:
 
 # Stage: rank_reaxff_validation. Combined ranking -- see
 # EnsembleFFFit.analysis.best_force_field.rank_force_fields_combined's own
-# docstring for the full scheme (relative energy + forces on
-# DFT/validation, forces only on DFT/training). lammps_energy_to_ev
-# assumes in.single_point's `units real` (kcal/mol -> eV, 1 eV =
-# 23.060548867 kcal/mol) -- MUST be recomputed if that units directive
-# ever changes. dest_dir (optional): if given, copies the top
-# number_to_copy force fields forward (e.g. for the next,
-# coordination-number/FT-MD comparison stage) via the same
+# docstring for the full scheme (forces on both DFT/validation and
+# DFT/training; relative energy, if training_yaml/validation_yaml below
+# are set, on both too). Everything is reported in kcal/mol (energy) /
+# kcal/mol/Angstrom (forces) -- LAMMPS's own "real" units are already
+# kcal/mol natively; ev_to_kcal_mol converts the DFT side up to match
+# (1 eV = 23.060548867 kcal/mol) -- MUST be recomputed if in.single_
+# point's `units real` directive ever changes. dest_dir (optional): if
+# given, copies the top number_to_copy force fields forward (e.g. for the
+# next, coordination-number/FT-MD comparison stage) via the same
 # strategy/number_to_copy/seed convention downselect_force_fields used.
 rank_reaxff_validation:
-  validation_ff_dir: MD/single_points/reaxff_validation/aimd/force_fields
+  validation_ff_dir: MD/generation_0/single_points/reaxff_validation/aimd/force_fields
   validation_reference_root: DFT/validation
-  training_ff_dir: MD/single_points/reaxff_validation/training/force_fields
+  training_ff_dir: MD/generation_0/single_points/reaxff_validation/training/force_fields
   training_reference_root: DFT/training
-  validation_energy_weight: 1.0
-  validation_force_weight: 1.0
-  training_force_weight: 1.0
-  lammps_energy_to_ev: 23.060548867
-  dest_dir: MD/single_points/reaxff_validation/selected/force_fields
-  number_to_copy: 25
-  strategy: spread
+  validation_force_weight: 5.0
+  training_force_weight: 5.0
+  # Converts DFT's native eV/eV-per-Angstrom up to kcal/mol/kcal-mol-per-
+  # Angstrom (LAMMPS's own "real" units are already kcal/mol natively, so
+  # that side is left alone) -- kcal/mol throughout, not eV, since
+  # get_divisors can solve a different total-atom-count reduction per
+  # structure, so there's no single consistent atom count to normalize an
+  # eV value by across the whole comparison (see
+  # EnsembleFFFit.analysis.best_force_field.convert_units_to_kcal_mol).
+  ev_to_kcal_mol: 23.060548867
+  dest_dir: MD/generation_0/single_points/reaxff_validation/selected/force_fields
+  number_to_copy: 50
+  strategy: top
   seed: null
+  # YAML-driven relative-energy comparison (see Paper_Analysis.md and
+  # relative_energy_comparison.py's own docstring) -- both training_yaml
+  # and validation_yaml must be set, or neither is used; leaving either
+  # one out falls back to the pre-existing behavior above (no new
+  # columns, no error).
+  # dict_parsing_num_processes: parse_labeled_tree (parsing every fitted
+  # force field's own properties.json tree -- the real bottleneck before
+  # the relative-energy comparison even starts) is parallelized across
+  # force-field labels via multiprocessing.Pool. Defaults to
+  # os.cpu_count(); uncomment to cap it lower.
+  # dict_parsing_num_processes: 32
+  training_yaml: DFT/reaxff_newest_kT.yml
+  validation_yaml: DFT/reaxff_validation.yml
+  relative_energy_task: MD/single_points/reaxff_validation/relative_energy_comparison.py
+  training_relative_energy_weight: 1.0
+  validation_relative_energy_weight: 1.0
+  # relative_energy_num_processes: ReaxEntry construction (the actual
+  # bottleneck -- one ReaxEntry per (target structure, force-field run))
+  # is parallelized across RUNS via multiprocessing.Pool (see
+  # RelativeEnergyComparison.compute's own docstring) -- defaults to
+  # os.cpu_count(), uncomment to cap it lower.
+  # relative_energy_num_processes: 32
 
 # Stage: stage_ft_md_force_fields. Stages EVERY fitted force field from
 # fine_tuning.run_directory (all 175, by explicit choice, confirmed
@@ -378,9 +470,19 @@ rank_reaxff_validation:
 # own force_fields tree, each as <ff_combo>/ffield. See _stage_force_fields
 # in run_pipeline.py (shared with stage_reaxff_validation_force_fields).
 ft_md_force_fields:
-  source_root: FF/generation_0/original
+  # Points at rank_reaxff_validation's own dest_dir -- only whatever that
+  # stage selected (its own number_to_copy/strategy, currently top 50)
+  # gets staged here, not the full ensemble. source_pattern: ffield since
+  # that tree's files are already renamed (not new_FF_*-named like raw
+  # fine_tuning.run_directory output) -- see _stage_force_fields'/
+  # run_stage_ft_md_force_fields's own docstrings. To run the full
+  # ensemble again instead, either set rank_reaxff_validation.
+  # number_to_copy to the full ensemble size, or point source_root back
+  # at FF/generation_0/1_10199 with source_pattern left at its default.
+  source_root: MD/generation_0/single_points/reaxff_validation/selected/force_fields
+  source_pattern: ffield
   dest_roots:
-    - MD/finite_temperature/coordination_check/force_fields
+    - MD/generation_0/finite_temperature/coordination_check/force_fields
   target_name: ffield
 
 # Stage: finite_temperature_md_batch. Replaces the old single-foundation-
@@ -410,7 +512,7 @@ ft_md_force_fields:
 # sample_ft_md_structures' or ft_md_force_fields' staged tree depth ever
 # changes.
 finite_temperature_md_batch:
-  run_directory: MD/finite_temperature/coordination_check/force_fields
+  run_directory: MD/generation_0/finite_temperature/coordination_check/force_fields
   inputs_directory: MD/finite_temperature/coordination_check/lammps_inputs
   check_files: [ffield]
   ffield: ffield
@@ -435,7 +537,7 @@ finite_temperature_md_batch:
 # hardcoded import. oxi_dct is REQUIRED by cn_checker.py's CrystalNN
 # weighted-CN approach -- Bi2Se3/Bi4Se3's own formal oxidation states.
 check_coordination_stability:
-  run_directory: MD/finite_temperature/coordination_check/force_fields
+  run_directory: MD/generation_0/finite_temperature/coordination_check/force_fields
   inputs_directory: MD/finite_temperature/coordination_check/lammps_inputs/structures
   coordination_task: MD/finite_temperature/coordination_check/cn_checker.py
   entry_point: check_coordination_stability
@@ -446,5 +548,35 @@ check_coordination_stability:
     Bi: 3
     Se: -2
   use_weights: true
-  json_file: MD/finite_temperature/coordination_check/coordination_comparison.json
-  ranking_path: MD/finite_temperature/coordination_check/coordination_ranking.txt
+  # agg: per-element CN deviation aggregation across sites -- 'mean'
+  # (default, robust to one outlier site) or 'median', vs. the original
+  # 'rms' (np.linalg.norm, lets one site's CN flip dominate the number).
+  agg: mean
+  # distance_cutoffs: passed to CrystalNN (default (0.5, 1), CrystalNN's
+  # own default). Widen this (e.g. [0.5, 2.0]) to widen CrystalNN's smooth
+  # distance-weight taper, which reduces sensitivity to small displacements
+  # for neighbors already in the Voronoi tessellation -- it does NOT stop
+  # the tessellation itself from discretely adding/dropping a neighbor,
+  # see cn_checker.py's own docstring.
+  distance_cutoffs: [0.5, 2.0]
+  json_file: MD/generation_0/finite_temperature/coordination_check/coordination_comparison.json
+  ranking_path: MD/generation_0/finite_temperature/coordination_check/coordination_ranking.txt
+
+select_next_generation_force_field:
+  # Objective-function ranking from run_rank_reaxff_validation, ascending
+  # by combined_score -- decides which candidate wins, coordination below
+  # is a go/no-go gate on top of that, not part of the score itself.
+  # Evaluates THIS generation's results (generation_number at the top of
+  # this file, 0) and creates the NEXT one (generation_number below, 1).
+  ranking_csv: MD/generation_0/single_points/reaxff_validation/selected/force_fields/ranking.csv
+  coordination_json: MD/generation_0/finite_temperature/coordination_check/coordination_comparison.json
+  # Bump this by hand each time a new generation is selected.
+  generation_number: 1
+  # Keep only the best coordination_percentile% of mean_cn_deviation among
+  # force fields with zero failed coordination MD runs (excludes the
+  # long, high-deviation tail).
+  coordination_percentile: 80
+  ffield_source_root: MD/generation_0/single_points/reaxff_validation/selected/force_fields
+  ffield_source_pattern: ffield
+  dest_root: FF
+  # selection_report_path defaults to FF/generation_<N>/selection_report.txt

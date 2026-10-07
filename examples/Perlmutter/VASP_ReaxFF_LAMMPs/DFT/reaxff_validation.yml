@@ -1,0 +1,46 @@
+# ReaxFF Layout
+
+output_format: 'reaxff' # consistent tag across all .yaml
+
+generation_parameters:
+  runs_to_generate: 25
+  #input_directory: # Not supported
+  #fix_input_weights: False # Not supported
+  #output_directory: 'training_data/runs_kT_like_16_w_ref_EoS'
+  output_directory: '/pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/FF/generation_0/parse2fit'
+
+default_weights: # Default is 50/50 0 or 1
+  energy:
+    type: 'magnitude'
+    min: 0.2
+    max: 5.0
+    kT: 70.0
+    scale: 10
+  charges:
+    type: 'binary'
+    min: 0.0
+    max: 0.001
+    split: 0.7
+
+input_paths:
+  # AIMD
+  #
+  "mp-23164": 
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/DFT/validation/aimd/2000K/mp-23164/single_image
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/DFT/validation/aimd/2000K/mp-23164/single_image/0
+      get_divisors: True
+
+  "mp-541837":
+    directories:
+      - /pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/DFT/validation/aimd/2000K/mp-541837/single_image
+    structure:
+      rutype: "SINGLE POINT"
+    energy:
+      subtract:
+        - /pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/DFT/validation/aimd/2000K/mp-541837/single_image/0
+      get_divisors: True

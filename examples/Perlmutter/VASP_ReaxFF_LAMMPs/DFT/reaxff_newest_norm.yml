@@ -7,14 +7,14 @@ generation_parameters:
   #input_directory: # Not supported
   #fix_input_weights: False # Not supported
   #output_directory: 'training_data/runs_kT_like_16_w_ref_EoS'
-  output_directory: '/pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/FF/generation_0/parse2fit'
+  output_directory: '/pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs/FF/generation_0/parse2fit_norm'
 
 default_weights: # Default is 50/50 0 or 1
   energy:
-    type: 'magnitude'
+    type: 'normal'
     min: 0.2
     max: 5.0
-    kT: 70.0
+    sigma: 1.0
     scale: 10
   charges:
     type: 'binary'

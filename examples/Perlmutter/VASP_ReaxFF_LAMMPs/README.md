@@ -14,12 +14,25 @@ NERSC Perlmutter, coordinated by a single script/config pair (`run_pipeline.py` 
    trainable vs. frozen in a given ensemble member).
 4. **LAMMPS/ReaxFF** validation: static single-point re-evaluation of every fitted
    force field against DFT ground truth (both AIMD melting trajectories and the
-   static training set), ranked by combined energy/force deviation.
+   static training set), ranked by combined energy/force deviation plus a
+   YAML-driven relative-energy comparison (`relative_energy_comparison.py` —
+   ReaxFF is fit to relative energies only, so comparing absolute DFT vs. ReaxFF
+   energies directly would be meaningless; see that script's own docstring).
 5. **LAMMPS/ReaxFF (Kokkos GPU)** finite-temperature MD: short, real room-temperature
    NPT runs of every fitted force field on representative supercells, checked for
    coordination-number stability against the pre-MD structure — a force field that
    can't survive a few picoseconds of real dynamics on a phase of interest is
    flagged here, independent of how it scored on static single points.
+6. **Generation selection**: `select_next_generation_force_field` picks a single
+   force field to carry into the next fitting round — the best combined
+   energy/force score among candidates that *also* clear a coordination-stability
+   gate (not folded into the score itself; a candidate that fails the gate is
+   skipped in favor of the next-best scorer). `FF/`/`MD/` are both organized as
+   `generation_<N>/` subtrees specifically so each round's inputs and outputs stay
+   separate — re-running `build_ff_inputs`/`fit_and_validate`/etc. against a new
+   `generation_number` (and that generation's own selected seed) repeats steps 2-6
+   starting from a better potential, without touching the previous generation's
+   results.
 
 Unlike the Frontier `RMG_MACE_ASE` example, this pipeline deliberately uses a
 **strictly fixed training dataset** — an earlier UQ/active-learning loop (downselect
@@ -41,31 +54,47 @@ This directory is a trimmed copy of a real, working investigation, scoped down
 deliberately at every stage to keep it small and to avoid shipping data that would
 look authoritative but wouldn't actually match a fresh run:
 
-- **`DFT/`**: `POSCAR` files and the two input YAMLs (`vdW_single_point.yml`, the VASP
-  recipe; `reaxff_newest_kT.yml`, the parse2fit directive) only — **no
-  `vasprun.xml`, no `properties.json`, no `POTCAR`**. Re-running `converge_dft_data`
-  regenerates converged DFT results from these POSCARs; `DFT/vasprun_to_properties.py`
-  then derives `properties.json` from the resulting `vasprun.xml`. Until you've done
-  that, `parse2fit_generation` and everything downstream of it (fitting, validation,
-  ranking, coordination-check) has nothing real to work with. Two directories from
-  the original investigation are deliberately **not** included at all: `test_runs/`
-  (an early "does VASP work through this container at all" smoke test, not part of
-  the real dataset) and `pymatgen_pseudos/` (a local POTCAR cache — VASP
-  pseudopotentials are licensed and can't be redistributed; you need your own copy,
-  see step 5).
-- **`FF/`**: only the seed `ffield` (`FF/generation_0/original/ffield`) and the full
-  parameter catalog (`FF/params_template/params`), plus the two driver scripts
+- **`DFT/`**: `POSCAR` files and four input YAMLs — `vdW_single_point.yml` (the VASP
+  recipe); `reaxff_newest_kT.yml`/`reaxff_newest_norm.yml`/`reaxff_newest_bin.yml`
+  (three parse2fit directives, identical `input_paths` but different energy-weighting
+  schemes — magnitude/normal/binary respectively; `workflow_config.yaml`'s
+  `parse2fit_generation.yaml_directive` defaults to the normal-weighting one, since an
+  earlier investigation found it outperformed the other two at the same
+  parameter-sampling scheme, but all three are shipped so you can re-run that
+  comparison yourself); `reaxff_validation.yml` (a fourth, smaller directive covering
+  just the AIMD validation trajectories, used by `relative_energy_comparison.py`, not
+  `parse2fit_generation`) — **no `vasprun.xml`, no `properties.json`, no `POTCAR`**.
+  Re-running `converge_dft_data` regenerates converged DFT results from these
+  POSCARs; `DFT/vasprun_to_properties.py` then derives `properties.json` from the
+  resulting `vasprun.xml`. Until you've done that, `parse2fit_generation` and
+  everything downstream of it (fitting, validation, ranking, coordination-check) has
+  nothing real to work with. Two directories from the original investigation are
+  deliberately **not** included at all: `test_runs/` (an early "does VASP work
+  through this container at all" smoke test, not part of the real dataset) and
+  `pymatgen_pseudos/` (a local POTCAR cache — VASP pseudopotentials are licensed and
+  can't be redistributed; you need your own copy, see step 5). All four YAMLs'
+  absolute paths need the same one-time rewrite before use — see step 4.
+- **`FF/`**: organized as `generation_0/` (see item 6 above) —
+  just the one seed `ffield` (`FF/generation_0/1_10199/ffield`, an already-validated
+  reference potential, not a bare unfitted catalog seed), the full parameter catalog
+  (`FF/params_template/params`), and the two driver scripts
   (`build_reaxff_ensemble_inputs.py`, `jax_reaxff_fit.py`). **No fitted force fields,
   no parse2fit-generated training variants, no per-blocking-scheme fitting inputs**
   — all of that is downstream of your own DFT results and would look different from
   a fresh run anyway, so shipping the current investigation's copies would be
-  actively misleading, not just bulky (the full set was ~82MB; this trimmed set is
-  well under 100KB).
-- **`MD/`**: recipe files only — LAMMPS `.in`/`control` files and driver scripts
+  actively misleading, not just bulky. `workflow_config.yaml`'s own
+  `build_ff_inputs.sampled_blocking` is a list of three independent parameter-sampling
+  specs (Bond/Off-diagonal/Angular, each capped at 3 simultaneously-unblocked
+  parameters) rather than one whole-section spec — see "Pitfalls" (step 7) for why.
+- **`MD/`**: recipe + driver scripts — LAMMPS `.in`/`control` files
   (`MD/finite_temperature/coordination_check/{cn_checker.py, lammps_inputs/}`,
-  `MD/single_points/reaxff_validation/lammps_inputs/`) — **no staged force fields,
-  no single-point/MD run output, no ranking or coordination-comparison result
-  files**. The two former UQ-only directories
+  `MD/single_points/reaxff_validation/lammps_inputs/`) plus
+  `MD/single_points/reaxff_validation/relative_energy_comparison.py` (real analysis
+  code, not just a recipe — builds parse2fit `ReaxEntry` objects for both DFT and
+  every fitted force field and compares relative energies the same way parse2fit
+  itself combines them for training, see its own docstring) — **no staged force
+  fields, no single-point/MD run output, no ranking or coordination-comparison
+  result files**. The two former UQ-only directories
   (`MD/finite_temperature/uq/`, `MD/single_points/uq/`) are gone entirely along with
   the UQ loop itself.
 
@@ -74,44 +103,39 @@ real VASP DFT convergence, not resuming from pre-computed results.
 
 ## 1. Build/obtain the Podman-HPC container
 
-This example deliberately does **not** ship its own `Dockerfile.matensemble` —
-that file is MatEnsemble/Perlmutter-specific, not something Ensemble-FF-Fit's own
-scope covers, and it changes as Perlmutter's own container/module stack does. Fetch
-the canonical one instead:
+This example ships its own `Dockerfile.ff-fit`, pre-built with everything this
+pipeline's own stages need (MatEnsemble, JAX-ReaxFF, parse2fit) rather than the
+earlier approach of fetching a bare MatEnsemble Dockerfile and hand-appending a
+`RUN pip install` block yourself — that earlier approach worked but left a real,
+confusing bug (see below) for anyone who hit it fresh:
 
 ```bash
-curl -L -o Dockerfile.matensemble \
-    https://raw.githubusercontent.com/FredDude2004/MatEnsemble/main/containers/perlmutter/Dockerfile.matensemble
+podman-hpc build -f Dockerfile.ff-fit -t matensemble:ff-fit .
 ```
 
-Then append this pipeline's own two extra dependencies (JAX-ReaxFF and parse2fit —
-see step 4 for why these are baked into the image rather than installed live) to
-the end of the file you just fetched:
+`Dockerfile.ff-fit`'s own final layer removes a stray `dataclasses` PyPI backport
+(`dataclasses.py`/`dataclasses-0.6.dist-info` under
+`/opt/basic/lib/python3.12/site-packages`) that `jax_md` (one of JAX-ReaxFF's own
+pinned dependencies) pulls in unconditionally via a `Requires-Dist: dataclasses`
+with no `python_version` marker — confirmed via a real build, not theoretical: that
+backport is a literal `dataclasses.py` that **shadows the stdlib module**, breaking
+every `@dataclass` use downstream (`scipy` -> `pymatgen` -> `parse2fit`) **and pip
+itself** (pip's own vendored `rich` console hits `@dataclass` at import time), so it
+can't be cleaned up with a later `pip uninstall` layer — it has to be removed
+directly while pip itself still works, which is exactly what this Dockerfile's last
+`RUN` does. If you're adapting this for a different base image/MatEnsemble version
+rather than using this Dockerfile as-is, keep that same removal step (or re-verify
+it's no longer needed) rather than dropping it silently.
 
-```bash
-cat >> Dockerfile.matensemble <<'EOF'
+If MatEnsemble/Perlmutter's own upstream container recommendations change
+significantly, re-diff this Dockerfile against the canonical one
+(`https://raw.githubusercontent.com/FredDude2004/MatEnsemble/main/containers/perlmutter/Dockerfile.matensemble`)
+rather than assuming this copy has kept up automatically.
 
-RUN /opt/basic/bin/python -m pip install \
-    "jaxreaxff @ git+https://github.com/Q-CAD/JAX-ReaxFF.git@develop" \
-    "parse2fit @ git+https://github.com/Q-CAD/parse2fit.git"
-EOF
-```
-
-Then build:
-
-```bash
-podman-hpc build -f Dockerfile.matensemble -t matensemble:ff-fit .
-```
-
-Re-fetch the upstream file (re-running the `curl` above) and re-append the same
-`RUN pip install` block whenever the upstream Dockerfile changes — don't just patch
-your local copy in place, or it'll silently drift from whatever MatEnsemble/Perlmutter
-actually recommend at the time.
-
-`Dockerfile.matensemble`'s base image, `nersc/flux:26.05`, already ships a working
-LAMMPS build with GPU/KOKKOS/REAXFF/PLUMED/KIM/ML-SNAP/ML-QUIP compiled in — you do
-**not** need to separately build or merge in a LAMMPS layer. Verify this rather than
-assume it before relying on it:
+The base image, `nersc/flux:26.05`, already ships a working LAMMPS build with
+GPU/KOKKOS/REAXFF/PLUMED/KIM/ML-SNAP/ML-QUIP compiled in — you do **not** need to
+separately build or merge in a LAMMPS layer. Verify this rather than assume it
+before relying on it:
 
 ```bash
 podman-hpc run --rm --gpu matensemble:ff-fit lmp -in /opt/lammps/examples/reaxff/AB/in.reaxff
@@ -237,55 +261,46 @@ updating paths, not rebuilding anything:
   pip install -e ".[mace,cuda]"
   ```
   (See the main repo README for the full extras list.)
-- **JAX-ReaxFF and parse2fit are baked into the container image itself** (the
-  `RUN pip install` block step 1 has you append to the fetched
-  `Dockerfile.matensemble`), **not** installed live at container-launch time. This
-  is a deliberate correction, not the original design: both used to be
-  PYTHONPATH-injected from local, actively-edited clones, and an `Ensemble-FF-Fit`
-  pip extra (`jaxreaxff`, still present in `pyproject.toml` as a reference for
-  other, non-ephemeral environments) was tried as a replacement — but **confirmed
-  broken for this specific container workflow** (2026-09, not just theoretical):
-  `/opt/basic/lib/python3.12/site-packages` lives entirely inside the container's
-  own filesystem, not any host-mounted path, so a live `pip install` inside one
-  `podman-hpc run --rm` container vanishes the moment that container exits —
-  invisible to every other chore's own separately-launched container. Baking the
-  install into the Dockerfile itself (see step 1) is what actually persists it.
-  JAX-ReaxFF's own `setup.py` pins its full GPU dependency chain
-  (`jax[cuda12]==0.4.35`, `jax_md`, `dm-haiku`, `flax`, `optax`, ...) — an unpinned
-  resolve drifts to newer releases that break at import time (confirmed via jax's
-  own PyPI metadata) — so a plain `pip install` of the git URL already gets the
-  exact right versions, no separate pinned-requirements script needed.
-  Confirmed live (2026-09): a fresh `pip install` of both packages together, in one
-  container session, installs cleanly and `import jaxreaxff.driver` / `import
-  parse2fit` both succeed, with `dataclasses` still correctly resolving to the real
-  stdlib module (not the shadowing bug an earlier `--target=deps`-based approach
-  hit — that was specific to front-loading PYTHONPATH, and doesn't reproduce under
-  a normal install). **Not yet independently confirmed**: a real GPU (`jax.devices()`
-  reporting an actual device, not just a clean import) after a full image rebuild
-  from this exact Dockerfile — the rebuild was stopped before finishing. Do that
-  full rebuild-and-GPU-check once before relying on this for a real fitting run:
-  ```bash
-  podman-hpc build -f Dockerfile.matensemble -t matensemble:ff-fit .
-  salloc -A <account>_g -C gpu --qos interactive -t 0:15:00 -N 1 --ntasks-per-node=1 --gpus-per-node=1
-  podman-hpc run --rm --gpu matensemble:ff-fit /opt/basic/bin/python -c \
-      'import jax, jaxreaxff.driver, parse2fit; print(jax.devices())'
-  ```
+- **JAX-ReaxFF and parse2fit are baked into the container image itself**
+  (`Dockerfile.ff-fit`'s own `RUN pip install` of both git URLs), **not** installed
+  live at container-launch time. This is a deliberate correction, not the original
+  design: both used to be PYTHONPATH-injected from local, actively-edited clones,
+  and an `Ensemble-FF-Fit` pip extra (`jaxreaxff`, still present in
+  `pyproject.toml` as a reference for other, non-ephemeral environments) was tried
+  as a replacement — but **confirmed broken for this specific container workflow**
+  (2026-09, not just theoretical): `/opt/basic/lib/python3.12/site-packages` lives
+  entirely inside the container's own filesystem, not any host-mounted path, so a
+  live `pip install` inside one `podman-hpc run --rm` container vanishes the
+  moment that container exits — invisible to every other chore's own separately-
+  launched container. Baking the install into the Dockerfile itself (see step 1)
+  is what actually persists it. JAX-ReaxFF's own `setup.py` pins its full GPU
+  dependency chain (`jax[cuda12]==0.4.35`, `jax_md`, `dm-haiku`, `flax`, `optax`,
+  ...) — an unpinned resolve drifts to newer releases that break at import time
+  (confirmed via jax's own PyPI metadata) — so a plain `pip install` of the git URL
+  already gets the exact right versions, no separate pinned-requirements script
+  needed. Confirmed on a real GPU allocation (2026-10, not just a clean import): a
+  full multi-generation fitting investigation (hundreds of ensemble members across
+  two fitting rounds) ran to completion against this exact image, including
+  `jax.devices()` actually reporting a GPU device during `fit_reaxff` chores — this
+  is no longer a "not yet confirmed" caveat.
   To update the pinned JAX-ReaxFF ref later (a new commit on its own `develop`
-  branch, or a different tag entirely), edit the `@develop` in the `RUN pip install`
-  line you appended to your local `Dockerfile.matensemble` (step 1) and rebuild —
-  there's no other file to touch for this, since `run_pipeline.py` no longer does
-  any JAX-ReaxFF/parse2fit path handling of its own.
+  branch, or a different tag entirely), edit the `@develop` in `Dockerfile.ff-fit`'s
+  own `RUN pip install` line and rebuild — there's no other file to touch for this,
+  since `run_pipeline.py` no longer does any JAX-ReaxFF/parse2fit path handling of
+  its own.
 
-**`DFT/reaxff_newest_kT.yml`** (the parse2fit directive) also needs attention
-separately from the above: it has **46 occurrences** of an absolute path baked into
-its `subtract`/`add`/`directory`/`output_directory` fields, one per
-`runs_to_generate` entry. This isn't an oversight — `parse2fit`'s own path
+**All four `DFT/reaxff_newest_*.yml`/`reaxff_validation.yml` files** (the parse2fit
+directives) need attention separately from the above: each has dozens of
+occurrences of an absolute path baked into its `subtract`/`add`/`directory`/
+`output_directory` fields. This isn't an oversight — `parse2fit`'s own path
 resolution requires absolute paths in the directive file, it can't take relative
-ones — but it does mean every one of those 46 needs updating to match wherever you
-actually put this example:
+ones — but it does mean every occurrence, in all four files, needs updating to
+match wherever you actually put this example:
 
 ```bash
-sed -i 's|/pscratch/sd/r/rym/MatEnsemble/run_pipeline|<your absolute path to this directory>|g' DFT/reaxff_newest_kT.yml
+for f in DFT/reaxff_newest_kT.yml DFT/reaxff_newest_norm.yml DFT/reaxff_newest_bin.yml DFT/reaxff_validation.yml; do
+    sed -i "s|/pscratch/sd/r/rym/MatEnsemble/Ensemble-FF-Fit/examples/Perlmutter/VASP_ReaxFF_LAMMPs|$(pwd)|g" "$f"
+done
 ```
 
 ## 5. Run the pipeline, stage by stage
@@ -308,6 +323,7 @@ python run_pipeline.py --config workflow_config.yaml --stage rank_reaxff_validat
 python run_pipeline.py --config workflow_config.yaml --stage stage_ft_md_force_fields
 python run_pipeline.py --config workflow_config.yaml --stage finite_temperature_md_batch
 python run_pipeline.py --config workflow_config.yaml --stage check_coordination_stability
+python run_pipeline.py --config workflow_config.yaml --stage select_next_generation_force_field
 ```
 
 `rank_reaxff_validation` writes a ranked comparison of every fitted force field
@@ -318,24 +334,44 @@ points — the two frequently disagree meaningfully (a force field that scores w
 statically can still be dynamically unstable, and vice versa), which is the entire
 point of running both.
 
+`select_next_generation_force_field` combines the two: it walks `rank_reaxff_
+validation`'s ranking best-score-first and picks the first candidate that *also*
+clears a coordination-stability gate (zero failed MD runs, and its mean CN deviation
+within the best `coordination_percentile`% of the fully-passing population —
+excluding the long, high-deviation tail), copying that one force field's `ffield`
+to `FF/generation_<N+1>/<label>/ffield` and writing a full decision-trail report
+(`FF/generation_<N+1>/selection_report.txt`) alongside it. To run a second
+generation starting from that selection: bump `generation_number` in
+`workflow_config.yaml` (every per-generation path below it defaults off this key —
+see that key's own comment at the top of the file), point `build_ff_inputs.ffield`/
+`fine_tuning.run_directory` at the newly-selected seed, and re-run from
+`parse2fit_generation`/`build_ff_inputs` onward. This is also the point at which
+you'd reconsider the fitting setup itself — e.g. which parameter sections to sample,
+how many at once, or which weighting scheme — rather than mechanically repeating
+generation 0's own choices.
+
 ## 6. Known limitations
 
-- **The Dockerfile-baked JAX-ReaxFF/parse2fit install (step 4) is not yet
-  independently confirmed with a real GPU.** A live install of both packages
-  together, in one container session, was confirmed to work (clean imports,
-  correct pinned versions, no `dataclasses`-shadowing regression) — but a full
-  image rebuild from the updated `Dockerfile.matensemble` followed by a real
-  `jax.devices()` GPU check was stopped before finishing. Do that check (step 4's
-  own verification block) before relying on this for a real fitting run.
-- **parse2fit is install-only scope, not debugged as part of this pipeline.**
-  It hasn't been actively maintained and may have bugs; if you hit one, that's a
+- **parse2fit is install-only scope, not debugged as part of this pipeline.** It
+  hasn't been actively maintained and may have bugs; if you hit one, that's a
   parse2fit issue to raise/fix upstream, not something this pipeline's own code is
-  expected to work around.
+  expected to work around. (One such bug was found and fixed directly: a
+  `ReaxEntry.__init__` units-ordering issue that `relative_energy_comparison.py`'s
+  own `_make_reax_entry` docstring describes — fixed upstream on parse2fit's
+  `develop` branch, commit `efc7786`.)
 - **The coordination-stability check's metric (pymatgen `CrystalNN`, weighted
   coordination number) is a first pass, not a settled choice.** It reliably catches
-  a full structural-motif breakdown but isn't the most descriptive metric available
-  — see `MD/finite_temperature/coordination_check/cn_checker.py`'s own docstring
-  for how to swap in a different structural descriptor without touching
+  a full structural-motif breakdown but isn't the most descriptive metric available.
+  Some jumpiness in reported CN deviations turned out to be a reporting artifact
+  rather than a real structural signal — `cn_checker.py`'s per-element aggregation
+  now defaults to the mean absolute per-site deviation (`agg: mean`) rather than an
+  L2/RMS norm, which let a single borderline site dominate the whole number; its
+  `distance_cutoffs` (CrystalNN's own smooth distance-weight taper) is also exposed
+  and widened from pymatgen's default in `workflow_config.yaml`. Neither change
+  addresses CrystalNN's own Voronoi-tessellation-based neighbor-inclusion threshold,
+  which can still jump discretely at borderline geometries — see
+  `MD/finite_temperature/coordination_check/cn_checker.py`'s own docstring for how
+  to swap in a different structural descriptor entirely without touching
   `run_pipeline.py` (it's a config-pointed, dynamically-imported driver script, same
   convention as `fine_tuning.ff_task`).
 - **GPU VASP's own CUDA stack (13.2) and this container's LAMMPS-GPU stack
@@ -406,3 +442,34 @@ point of running both.
   direct `build_task_dicts` call, checking the resulting chore count and
   structures-per-chore) before trusting a value copied from a different stage with
   a different tree depth.
+- **Activating an entire ReaxFF parameter section at once let angular force
+  constants move 7-18x their starting value during fitting**, severely degrading
+  LAMMPS-reax/c agreement relative to the unfitted seed potential — confirmed via a
+  controlled comparison against the unfitted seed and an independently-validated
+  reference potential, both of which agreed with DFT/JAX-ReaxFF far better than any
+  of the fitted ensemble members from that round. `build_reaxff_ensemble_inputs.
+  sample_parameter_subsets` replaced whole-section activation with capped-size
+  random subsets (`build_ff_inputs.sampled_blocking`, `max_params` below 6) for
+  exactly this reason — unblock a few parameters at a time, not an entire class, and
+  isolate which ones are actually safe to free before trusting a fit's own
+  agreement. If a given section's real parameter pool is small enough that the
+  requested `n_variants` would mostly be duplicate subsets (Off-diagonal here has
+  only 4 real JAX-ReaxFF-mapped parameters), `sample_parameter_subsets` enumerates
+  every distinct subset exhaustively instead, rather than padding with redundant
+  re-fits.
+- **`relative_energy_comparison.py`'s ReaxEntry construction and `dict_parsers.
+  parse_labeled_tree`'s properties.json parsing are both O(structures x force
+  fields), and were both fully sequential until they became the real wall-time
+  bottleneck at a few hundred ensemble members** (confirmed directly: a real
+  20-force-field, 20-process timing comparison on real data showed 4.3x on `parse_
+  labeled_tree` alone; `RelativeEnergyComparison.compute` showed ~12x on a separate
+  20-run timing comparison). Both now parallelize across *force-field runs/labels*
+  via `multiprocessing.Pool` — not across individual structures, which at hundreds
+  of structures x hundreds of runs would be far too fine-grained for the per-task
+  dispatch overhead to pay for itself — each defaulting to `os.cpu_count()`
+  (`rank_reaxff_validation.dict_parsing_num_processes`/`relative_energy_num_
+  processes` in `workflow_config.yaml` to cap either lower). Every result was
+  diffed against the prior sequential code's own output on real data before
+  trusting the speedup (bit-for-bit identical in both cases) — worth re-doing the
+  same check if you modify either function, since silent divergence here would be
+  very easy to miss (both still "complete successfully," just with wrong numbers).

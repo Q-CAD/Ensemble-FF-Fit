@@ -89,7 +89,10 @@ same role MACE's foundation_model plays under fine_tuning.run_directory,
 not fine_tuning.inputs_directory.
 """
 import glob
+import itertools
+import math
 import os
+import random
 import shutil
 
 
@@ -238,15 +241,111 @@ def get_ffield_parameter_values(ffield_path, section_index_tuples, cutoff2=0.001
     return values, valid_keys
 
 
+def sample_parameter_subsets(tagged_lines, valid_param_keys, section=5, n_variants=75,
+                              min_params=1, max_params=6, stratify=True, rng_seed=None,
+                              label_prefix=None):
+    """
+    Returns {label: [(section, index1, index2), ...]} -- n_variants randomly
+    sampled subsets of `section`'s own catalog lines, each of size k (k
+    ranging over min_params..max_params), in the SAME shape write_params_
+    variant's `active_sections` already accepts for fine-grained (single-
+    line) activation -- so the result can be passed straight through as a
+    blocking_scheme to build_reaxff_ensemble_inputs, no other changes
+    needed. Added (2026-10) after a real investigation found that
+    activating an entire section at once (the original, coarse-grained
+    scheme) let ReaxFF's angular force constants move 7-18x their starting
+    value during fitting, severely degrading LAMMPS-reax/c agreement
+    relative to the unfitted seed potential -- this caps how many
+    parameters move at once instead, to isolate which ones are safe to
+    free.
+
+    Candidate pool is every `section` line with real parsed bounds (parsed
+    is not None) AND a real JAX-ReaxFF parameter mapping (its (section,
+    index1, index2) key is in valid_param_keys -- see
+    get_ffield_parameter_values; activating a line with no real mapping
+    would otherwise crash driver.py with a KeyError once fitting runs,
+    same reasoning as write_params_variant's own valid_param_keys check).
+
+    If stratify (the default), k cycles evenly through min_params..
+    max_params (k = min_params + (i % span) for variant i) so every count
+    is represented an equal, or as-equal-as-n_variants-allows, number of
+    times -- deliberate, not incidental: reading "does performance degrade
+    as more parameters are freed" cleanly out of the resulting ensemble
+    needs even coverage of each count, which isn't guaranteed if k is
+    drawn freely at random instead (set stratify=False for that).
+
+    Never generates two variants with the exact identical sampled subset.
+    If n_variants is >= the total number of distinct subsets actually
+    available (sum of C(len(pool), k) for k in min_params..max_params --
+    e.g. the Off-diagonal section's catalog has only 4 real JAX-ReaxFF-
+    mapped parameters, 14 distinct subsets total for min_params=1,
+    max_params=3, far fewer than a 75-variant request), every distinct
+    subset is returned exactly once (exhaustive enumeration) instead of
+    padding out to n_variants with duplicate re-fits of the same subset,
+    which would waste compute without adding information. Otherwise, falls
+    back to random sampling (regenerating on a duplicate draw, up to 1000
+    attempts before giving up and accepting the duplicate -- only
+    reachable right at the edge of the distinct-subset count).
+    """
+    pool = sorted({parsed[0:3] for _, _, parsed, _ in tagged_lines
+                   if parsed is not None and parsed[0] == section and parsed[0:3] in valid_param_keys})
+    if not pool:
+        raise ValueError(f"No section-{section} catalog lines with real bounds and a valid "
+                          f"JAX-ReaxFF parameter mapping -- nothing to sample from.")
+
+    label_prefix = label_prefix or f"section{section}_sample"
+    span = max_params - min_params + 1
+    k_range = [k for k in range(min_params, max_params + 1) if k <= len(pool)]
+    total_distinct = sum(math.comb(len(pool), k) for k in k_range)
+
+    if n_variants >= total_distinct:
+        if n_variants > total_distinct:
+            print(f"NOTE: sample_parameter_subsets({label_prefix!r}): requested n_variants={n_variants} "
+                  f"but only {total_distinct} distinct subset(s) exist for section {section} with "
+                  f"{len(pool)} valid parameter(s) and min_params={min_params}, max_params={max_params} "
+                  f"-- returning all {total_distinct} exhaustively instead of padding with duplicates.")
+        scheme = {}
+        i = 0
+        for k in k_range:
+            for subset in itertools.combinations(pool, k):
+                scheme[f"{label_prefix}_{i:03d}_k{k}"] = list(subset)
+                i += 1
+        return scheme
+
+    rng = random.Random(rng_seed)
+    scheme = {}
+    seen_subsets = set()
+    for i in range(n_variants):
+        k = (min_params + (i % span)) if stratify else rng.randint(min_params, max_params)
+        k = min(k, len(pool))
+
+        attempts = 0
+        while True:
+            subset = tuple(sorted(rng.sample(pool, k)))
+            attempts += 1
+            if subset not in seen_subsets or attempts > 1000:
+                break
+        seen_subsets.add(subset)
+
+        scheme[f"{label_prefix}_{i:03d}_k{k}"] = list(subset)
+
+    return scheme
+
+
 def write_params_variant(tagged_lines, active_sections, output_path,
                           ffield_values=None, unbounded_half_width=1e4,
                           valid_param_keys=None):
     """
-    Write a `params` file to `output_path`: every tagged line whose section
-    is in `active_sections` (an iterable of ReaxFF section numbers, e.g.
-    [4, 5] for Off-diagonal + Angular) written active (uncommented); every
-    other line (including section=None lines) written frozen (commented,
-    `#`-prefixed).
+    Write a `params` file to `output_path`: every tagged line written active
+    (uncommented) if EITHER its own section is in `active_sections` (whole-
+    section activation, e.g. [4, 5] for Off-diagonal + Angular -- the
+    original, coarse-grained scheme) OR its own (section, index1, index2)
+    key is itself an element of `active_sections` (fine-grained, single-
+    line activation -- what sample_parameter_subsets produces) -- the two
+    forms of membership don't conflict (ints vs. 3-tuples), so the same set
+    can mix both if ever needed, though a given call typically uses one or
+    the other. Every other line (including section=None lines) written
+    frozen (commented, `#`-prefixed).
 
     valid_param_keys, if given (see get_ffield_parameter_values), forces
     any line whose (section, index1, index2) isn't a real, optimizable
@@ -287,7 +386,8 @@ def write_params_variant(tagged_lines, active_sections, output_path,
 
     for raw_line, section, parsed, comment_field in tagged_lines:
         stripped = raw_line.rstrip('\n')
-        is_active = section is not None and section in active_sections
+        is_active = (section is not None and section in active_sections) or (
+            parsed is not None and parsed[0:3] in active_sections)
 
         if is_active and parsed is not None and valid_param_keys is not None:
             if parsed[0:3] not in valid_param_keys:
@@ -371,15 +471,21 @@ def write_metadata(combo_dir, parse2fit_run_dir, blocking_label, active_sections
 
 def build_reaxff_ensemble_inputs(parse2fit_root, catalog_params_path,
                                   blocking_scheme, output_dir, ffield_path=None,
-                                  unbounded_half_width=1e4):
+                                  unbounded_half_width=1e4, seed_runs=None):
     """
     Cross-products every parse2fit-generated geo/trainset.in variant under
     parse2fit_root (one per f"{output_format}_run_{i}" folder -- see
     parse2fit's own readwrite.py/run_pipeline.py's run_parse2fit_generation)
-    against every blocking_scheme label ({label: [section_number, ...]}),
-    writing output_dir/<parse2fit_run_name>_<label>/{geo, trainset.in,
-    params, METADATA} for each combination. Returns the list of written
-    combo directories.
+    against every blocking_scheme label ({label: [section_number_or_(section,
+    index1,index2)_key, ...]} -- see write_params_variant/
+    sample_parameter_subsets for the two forms), writing output_dir/
+    <parse2fit_run_name>_<label>/{geo, trainset.in, params, METADATA} for
+    each combination. Returns the list of written combo directories.
+
+    seed_runs (optional): restrict to specific parse2fit run directories by
+    basename (e.g. ['reaxff_run_0', 'reaxff_run_1']) instead of every one
+    discovered under parse2fit_root -- for exploring a parameter-sampling
+    scheme against a handful of seeds before committing to the full set.
 
     ffield_path is effectively required for a correct result, not merely
     helpful for bound-widening -- see get_ffield_parameter_values' own
@@ -406,6 +512,12 @@ def build_reaxff_ensemble_inputs(parse2fit_root, catalog_params_path,
         if os.path.isdir(d) and os.path.exists(os.path.join(d, 'geo'))
         and os.path.exists(os.path.join(d, 'trainset.in'))
     )
+    if seed_runs is not None:
+        wanted = set(seed_runs)
+        parse2fit_runs = [d for d in parse2fit_runs if os.path.basename(d) in wanted]
+        missing = wanted - {os.path.basename(d) for d in parse2fit_runs}
+        if missing:
+            raise FileNotFoundError(f"seed_runs requested but not found under {parse2fit_root}: {sorted(missing)}")
     if not parse2fit_runs:
         raise FileNotFoundError(
             f"No geo+trainset.in folders found under {parse2fit_root} -- did you run "

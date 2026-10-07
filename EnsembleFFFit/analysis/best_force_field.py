@@ -1,5 +1,7 @@
 from sklearn.metrics import root_mean_squared_error
+from tqdm import tqdm
 import numpy as np
+import os
 
 
 def convert_units(run_image_dct, energy_to_ev_factor):
@@ -26,102 +28,181 @@ def convert_units(run_image_dct, energy_to_ev_factor):
     return out
 
 
-def relativize_energies(run_image_dct, reference_image="0"):
+def convert_units_to_kcal_mol(run_image_dct, ev_to_kcal_mol_factor):
     """
-    Returns a NEW {run: {image: props}} dict where every image's "energy"
-    is replaced by (that image's own energy - the SAME run's
-    reference_image energy) -- i.e. energy relative to each run's own
-    starting/reference frame, not an absolute value.
-
-    Needed because ReaxFF is trained on relative energies only, so
-    absolute DFT-vs-ReaxFF energy comparison isn't meaningful -- the two
-    can differ drastically in absolute terms while their relative
-    (frame-to-frame) differences agree well. Comparing each side's own
-    relative-to-frame-0 energy series sidesteps this entirely.
-
-    Does not mutate the input; forces are left untouched. Raises KeyError
-    if any run is missing its own reference_image.
+    Returns a NEW {run: {image: props}} dict with "energy"/"fx"/"fy"/"fz"
+    MULTIPLIED by ev_to_kcal_mol_factor -- the opposite direction from
+    convert_units above (which divides LAMMPS's native kcal/mol down to
+    eV). Used on the DFT side instead: VASP's native eV/eV-per-Angstrom
+    output -> kcal/mol/kcal-mol-per-Angstrom, so every energy/force
+    comparison in this module stays in ReaxFF's own native unit
+    throughout, matching relative_energy_comparison.py's own ReaxEntry-
+    normalized values. Reporting in eV (or eV/atom) doesn't work cleanly
+    here: get_divisors can solve a different total-atom-count reduction
+    for different structures (see RelativeEnergyComparison's own
+    docstring), so there's no single, consistent atom count to normalize
+    an eV value by across the whole comparison -- kcal/mol sidesteps that
+    entirely by just being ReaxFF's native unit, not a per-atom one.
+    Does not mutate the input.
     """
     out = {}
     for run, images in run_image_dct.items():
-        if reference_image not in images:
-            raise KeyError(f"run {run!r} has no reference image {reference_image!r} to relativize against")
-        ref_energy = images[reference_image]['energy']
         out[run] = {}
         for image, props in images.items():
             converted = dict(props)
-            converted['energy'] = props['energy'] - ref_energy
+            converted['energy'] = props['energy'] * ev_to_kcal_mol_factor
+            converted['fx'] = [v * ev_to_kcal_mol_factor for v in props['fx']]
+            converted['fy'] = [v * ev_to_kcal_mol_factor for v in props['fy']]
+            converted['fz'] = [v * ev_to_kcal_mol_factor for v in props['fz']]
             out[run][image] = converted
     return out
+
+
+def get_relative_energy_deviations(relative_energy_ff_dct, relative_energy_reference_dct, reference_label="DFT"):
+    """
+    {ff_label: {entry_name: {target: abs(ff_relative_energy -
+    dft_relative_energy)}}} -- plain unweighted absolute difference, not
+    RMSE, per Paper_Analysis.md's explicit requirement: this is a direct
+    training/validation-set accuracy check against the exact relative
+    energies ReaxFF was fit against (see
+    relative_energy_comparison.RelativeEnergyComparison), not another
+    Boltzmann/training-weighted objective function -- those weights
+    decide what parse2fit emphasizes during fitting, which has no bearing
+    on how far off a fitted potential's prediction actually is.
+
+    Shape-checked the same way get_ff_deviations/rank_force_fields_combined
+    check validation/training dicts (assert_comparable_dicts) -- entry_name
+    plays the role of md_name, target (a DFT-root-relative path) plays the
+    role of md_image.
+    """
+    assert_comparable_dicts(relative_energy_ff_dct, relative_energy_reference_dct, reference_label)
+
+    ref_root = relative_energy_reference_dct[reference_label]
+    deviation_dct = {}
+
+    for ff_label, entry_dct in relative_energy_ff_dct.items():
+        deviation_dct[ff_label] = {}
+        for entry_name, target_dct in entry_dct.items():
+            deviation_dct[ff_label][entry_name] = {}
+            for target, props in target_dct.items():
+                ref_value = ref_root[entry_name][target]['relative_energy']
+                deviation_dct[ff_label][entry_name][target] = abs(props['relative_energy'] - ref_value)
+
+    return deviation_dct
+
+
+def get_relative_energy_scores(deviation_dct):
+    """ Mean absolute relative-energy deviation per force field. """
+    score_dct = {}
+
+    for ff_label, entry_dct in deviation_dct.items():
+        total, count = 0.0, 0
+        for target_dct in entry_dct.values():
+            for deviation in target_dct.values():
+                total += deviation
+                count += 1
+
+        if count == 0:
+            raise ValueError(f"No relative-energy comparisons found for force field '{ff_label}'")
+
+        score_dct[ff_label] = total / count
+
+    return score_dct
 
 
 def rank_force_fields_combined(
     validation_ff_dct, validation_reference_dct,
     training_ff_dct, training_reference_dct,
-    validation_energy_weight=1.0, validation_force_weight=1.0, training_force_weight=1.0,
-    reference_label="DFT", reference_image="0",
+    validation_force_weight=1.0, training_force_weight=1.0,
+    training_relative_energy_dct=None, training_relative_energy_reference_dct=None,
+    validation_relative_energy_dct=None, validation_relative_energy_reference_dct=None,
+    training_relative_energy_weight=1.0, validation_relative_energy_weight=1.0,
+    reference_label="DFT",
 ):
     """
     Combined ReaxFF validation ranking (see run_pipeline.py's
     run_rank_reaxff_validation docstring for the full pipeline this feeds):
 
-    - validation_ff_dct/validation_reference_dct: {label: {run: {image:
-      props}}} / {reference_label: {run: {image: props}}}, from DFT/
-      validation's AIMD trajectories. Energies are relativized (see
-      relativize_energies) against each run's own reference_image before
-      scoring -- ReaxFF is trained on relative energies only, so absolute
-      DFT-vs-ReaxFF energy comparison isn't meaningful (see
-      relativize_energies' own docstring). Forces are compared directly.
-    - training_ff_dct/training_reference_dct: same shape, from DFT/
-      training -- forces only, no relative-energy concept applied (no
-      sensible reference frame exists for arbitrary non-trajectory
-      structures) -- the energy component is computed but never used in
-      the combined score.
+    - validation_ff_dct/validation_reference_dct and training_ff_dct/
+      training_reference_dct: {label: {run: {image: props}}} /
+      {reference_label: {run: {image: props}}}, from DFT/validation's
+      AIMD trajectories and DFT/training respectively -- forces only.
+      There used to also be a frame-0-relative validation energy
+      component here (see relativize_energies, since removed): it
+      compared energies via plain subtraction against each trajectory's
+      own frame 0, with no stoichiometric (get_divisors) reduction at
+      all -- a genuinely different, less rigorous method than training's
+      own relative-energy treatment below, and redundant with it once
+      reaxff_validation.yml (see relative_energy_comparison.py) made the
+      SAME get_divisors-based method expressible for AIMD trajectories
+      too (subtract: [frame 0], get_divisors: True). Removed so training
+      and validation now share one consistent energy-comparison method.
+    - training_relative_energy_dct/training_relative_energy_reference_dct
+      and validation_relative_energy_dct/validation_relative_energy_
+      reference_dct (optional): {label: {entry_name: {target:
+      {"relative_energy": value}}}}, from
+      relative_energy_comparison.build_relative_energy_dcts -- the
+      YAML-driven (reaxff_newest_kT.yml/reaxff_validation.yml) relative
+      energies, in kcal/mol. Omitted (left None) entirely by default --
+      existing callers that don't pass these keep their old behavior and
+      table columns unchanged.
 
     Both ff_dct arguments are assumed ALREADY unit-converted to match
-    their reference (see convert_units) -- this function does no unit
-    conversion itself, only relativizing + RMSE scoring.
+    their reference (kcal/mol/kcal-mol-per-Angstrom throughout -- see
+    convert_units_to_kcal_mol) -- this function does no unit conversion
+    itself, only RMSE scoring. The relative-energy dcts need no such
+    conversion -- RelativeEnergyComparison builds both sides through the
+    same ReaxEntry, which already normalizes units via parse2fit's own
+    UnitConverter, also kcal/mol.
 
     Returns (lines, labels, combined_scores): lines is a ranked table
-    (best/lowest combined score first) reporting, per force field, the
-    three components this session's own investigation confirmed worth
-    inspecting separately -- mean validation energy deviation (relative),
-    mean validation force deviation, mean training force deviation -- next
-    to the combined weighted score actually used for ranking. labels/
+    (best/lowest combined score first) reporting, per force field, each
+    raw component (with its own unit in the column header) next to the
+    combined weighted score actually used for ranking. labels/
     combined_scores are the same ranking, machine-readable.
     """
-    val_ff_relative = {label: relativize_energies(run_dct, reference_image)
-                       for label, run_dct in validation_ff_dct.items()}
-    val_ref_relative = {reference_label: relativize_energies(
-        validation_reference_dct[reference_label], reference_image)}
-
     # weight=1.0/1.0 here (not the caller's own weights) -- these calls
     # produce RAW, unweighted per-component RMSE; this function's own
-    # validation_*_weight/training_force_weight args are applied afterward,
-    # once, when combining the three components -- same "raw first, weight
-    # once at the end" pattern as format_ranking_table's own raw_deviation_dct.
-    val_deviation_dct = get_ff_deviations(val_ff_relative, val_ref_relative, 1.0, 1.0, reference_label=reference_label)
+    # validation_force_weight/training_force_weight args are applied
+    # afterward, once, when combining components -- same "raw first,
+    # weight once at the end" pattern as format_ranking_table's own
+    # raw_deviation_dct.
+    val_deviation_dct = get_ff_deviations(validation_ff_dct, validation_reference_dct, 1.0, 1.0, reference_label=reference_label)
     train_deviation_dct = get_ff_deviations(training_ff_dct, training_reference_dct, 1.0, 1.0, reference_label=reference_label)
+
+    has_training_rel_e = training_relative_energy_dct is not None
+    has_validation_rel_e = validation_relative_energy_dct is not None
+
+    if has_training_rel_e:
+        training_rel_e_scores = get_relative_energy_scores(
+            get_relative_energy_deviations(training_relative_energy_dct, training_relative_energy_reference_dct, reference_label))
+    if has_validation_rel_e:
+        validation_rel_e_scores = get_relative_energy_scores(
+            get_relative_energy_deviations(validation_relative_energy_dct, validation_relative_energy_reference_dct, reference_label))
 
     components = {}
     for label in validation_ff_dct:
         val_images = [i for md in val_deviation_dct[label].values() for i in md.values()]
         train_images = [i for md in train_deviation_dct[label].values() for i in md.values()]
 
-        mean_val_energy = sum(i['energy'] for i in val_images) / len(val_images)
         mean_val_force = sum((i['fx'] + i['fy'] + i['fz']) / 3 for i in val_images) / len(val_images)
         mean_train_force = sum((i['fx'] + i['fy'] + i['fz']) / 3 for i in train_images) / len(train_images)
 
-        combined = (validation_energy_weight * mean_val_energy
-                    + validation_force_weight * mean_val_force
+        combined = (validation_force_weight * mean_val_force
                     + training_force_weight * mean_train_force)
 
         components[label] = {
-            'mean_val_energy': mean_val_energy,
             'mean_val_force': mean_val_force,
             'mean_train_force': mean_train_force,
             'combined': combined,
         }
+
+        if has_training_rel_e:
+            components[label]['mean_train_relative_energy'] = training_rel_e_scores[label]
+            components[label]['combined'] += training_relative_energy_weight * training_rel_e_scores[label]
+        if has_validation_rel_e:
+            components[label]['mean_val_relative_energy'] = validation_rel_e_scores[label]
+            components[label]['combined'] += validation_relative_energy_weight * validation_rel_e_scores[label]
 
     sorted_labels = sorted(components, key=lambda l: components[l]['combined'])
 
@@ -130,12 +211,30 @@ def rank_force_fields_combined(
     # wider than a fixed width, which was misaligning every row.
     label_width = max([len('ff_label')] + [len(l) for l in sorted_labels])
 
-    lines = [f"{'rank':>4}  {'ff_label':<{label_width}}  {'val_energy_dev':>15}  {'val_force_dev':>15}  "
-             f"{'train_force_dev':>16}  {'combined_score':>15}"]
+    # Extra columns are appended, in this fixed order, only for whichever
+    # relative-energy dcts were actually passed -- keeps the table/header
+    # in sync without hardcoding which columns exist.
+    extra_columns = []
+    if has_training_rel_e:
+        extra_columns.append(('mean_train_relative_energy', 'train_rel_e_dev_kcalmol', 24))
+    if has_validation_rel_e:
+        extra_columns.append(('mean_val_relative_energy', 'val_rel_e_dev_kcalmol', 24))
+
+    header = (f"{'rank':>4}  {'ff_label':<{label_width}}  {'val_force_dev_kcalmolA':>23}  "
+              f"{'train_force_dev_kcalmolA':>25}")
+    for _, column_label, width in extra_columns:
+        header += f"  {column_label:>{width}}"
+    header += f"  {'combined_score':>15}"
+
+    lines = [header]
     for rank, label in enumerate(sorted_labels, start=1):
         c = components[label]
-        lines.append(f"{rank:>4}  {label:<{label_width}}  {c['mean_val_energy']:>15.6f}  {c['mean_val_force']:>15.6f}  "
-                      f"{c['mean_train_force']:>16.6f}  {c['combined']:>15.6f}")
+        line = (f"{rank:>4}  {label:<{label_width}}  {c['mean_val_force']:>23.6f}  "
+                f"{c['mean_train_force']:>25.6f}")
+        for key, _, width in extra_columns:
+            line += f"  {c[key]:>{width}.6f}"
+        line += f"  {c['combined']:>15.6f}"
+        lines.append(line)
 
     return lines, sorted_labels, [components[l]['combined'] for l in sorted_labels]
 
@@ -218,6 +317,61 @@ def get_ff_deviations(
                 }
 
     return ff_deviation_dct
+
+
+def write_per_structure_force_deviations(
+    ff_dct, reference_dct, output_root,
+    reference_label="DFT",
+    filename="force_deviations.csv",
+):
+    """
+    Writes one file per force field, into output_root/<ff_label>/filename
+    (that force field's own run directory, alongside its ffield/
+    structures/ -- e.g. MD/single_points/reaxff_validation/aimd/
+    force_fields/reaxff_run_0_angular_only/force_deviations.csv), with one
+    row per structure (md_name/md_image): its per-structure, UNWEIGHTED
+    fx/fy/fz force RMSE, in kcal/mol/Angstrom (see get_ff_deviations,
+    called here with energy_weight=force_weight=1.0 for the same reason
+    rank_force_fields_combined's own raw_deviation_dct does -- a
+    configured weight of 0 would make recovering the raw value from a
+    weighted one undefined; ff_dct/reference_dct are assumed already
+    unit-converted to kcal/mol/kcal-mol-per-Angstrom throughout, same
+    assumption as rank_force_fields_combined -- see
+    convert_units_to_kcal_mol).
+
+    No energy column -- this used to optionally include one (via a
+    frame-0-relative "energy" deviation, for validation's AIMD
+    trajectories specifically), but that was a plain-subtraction
+    comparison with no stoichiometric (get_divisors) reduction, a
+    different and less rigorous method than the YAML-driven relative-
+    energy comparison (relative_energy_comparison.py's own
+    relative_energy_comparison.csv) now covers for both training AND
+    validation consistently -- see rank_force_fields_combined's own
+    docstring for the same reasoning. Energy accuracy belongs in that
+    file; this one is forces only.
+
+    Recomputes get_ff_deviations independently from rank_force_fields_
+    combined's own internal call (a little duplicated work, not reused
+    via a shared return value) -- keeps rank_force_fields_combined's
+    existing return signature/contract untouched rather than threading a
+    detail dict through it for what's otherwise a self-contained,
+    additive output.
+    """
+    deviation_dct = get_ff_deviations(ff_dct, reference_dct, 1.0, 1.0, reference_label=reference_label)
+
+    header = "structure,fx_dev_kcalmolA,fy_dev_kcalmolA,fz_dev_kcalmolA"
+
+    for ff_label, md_dct in tqdm(deviation_dct.items(), desc="writing force deviations", unit="force_field"):
+        lines = [header]
+        for md_name, image_dct in md_dct.items():
+            for md_image, dev in image_dct.items():
+                structure = f"{md_name}/{md_image}" if md_name else md_image
+                lines.append(f"{structure},{dev['fx']:.6f},{dev['fy']:.6f},{dev['fz']:.6f}")
+
+        out_path = os.path.join(output_root, ff_label, filename)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, 'w') as f:
+            f.write("\n".join(lines) + "\n")
 
 def get_ff_scores(deviation_dct):
     """

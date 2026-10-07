@@ -15,7 +15,10 @@ JAX-ReaxFF; every MD stage (validation single points, finite-temperature MD)
 targets LAMMPS/ReaxFF, with Kokkos GPU acceleration for the finite-
 temperature MD stage specifically (see MD/finite_temperature/
 coordination_check/lammps_inputs/in.npt_room_temp's own comments for the
-Kokkos-specific settings ReaxFF needs).
+Kokkos-specific settings ReaxFF needs) -> next-generation force field
+selection (combined energy/force objective score ranks candidates,
+coordination stability is a go/no-go gate on top of that, not part of the
+score -- see run_select_next_generation_force_field's own docstring).
 
 An earlier UQ/active-learning loop (downselect -> uq_single_points ->
 select_dft_candidates, iteratively picking new DFT candidates by ensemble
@@ -46,6 +49,7 @@ can run anywhere EnsembleFFFit's analysis extras are installed)
     python run_pipeline.py --config workflow_config.yaml --stage stage_ft_md_force_fields
     python run_pipeline.py --config workflow_config.yaml --stage finite_temperature_md_batch
     python run_pipeline.py --config workflow_config.yaml --stage check_coordination_stability
+    python run_pipeline.py --config workflow_config.yaml --stage select_next_generation_force_field
     python run_pipeline.py --config workflow_config.yaml --stage all
 
 matensemble is only imported inside the stage functions that actually need
@@ -62,6 +66,8 @@ a different DFT driver, same reasoning as why the MD drivers stay
 user-owned rather than canonicalized.
 """
 import argparse
+import csv
+import json
 import os
 import random
 import re
@@ -70,6 +76,7 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import yaml
 
 from EnsembleFFFit.analysis.dict_parsers import parse_labeled_tree, parse_reference_tree
@@ -304,6 +311,32 @@ def jax_reaxff_container_env():
     }
 
 
+def _gen_default(config, *parts):
+    """
+    Default path fragment for a generation-scoped FF/MD subtree:
+    generation_<N>/<parts>, N from the top-level generation_number config
+    key (default 0) -- e.g. _gen_default(config, 'reaxff_inputs') ->
+    "generation_0/reaxff_inputs". Only ever used as a cfg.get(key,
+    os.path.join('FF'-or-'MD', _gen_default(...))) fallback, so any
+    stage's own explicit path always wins and existing configs with
+    explicit paths (e.g. this pipeline's own generation_0 run, left flat
+    rather than retrofitted) are completely unaffected -- a config that
+    omits these path keys entirely (e.g. a fresh example) gets the
+    generation-separated layout for free, starting from generation 0,
+    without the user having to spell out every path by hand.
+
+    Deliberately NOT applied to inputs that don't change between
+    generations (DFT/training, DFT/validation, the reaxff_validation/
+    coordination_check LAMMPS recipe files + reference structures, the
+    params catalog) -- only to the per-generation INPUT variants (parse2fit
+    output, reaxff_inputs) and OUTPUT trees (fitting results, single-point/
+    coordination-check force fields and their results) that this scheme
+    exists to keep from colliding across generations.
+    """
+    gen = config.get('generation_number', 0)
+    return os.path.join(f'generation_{gen}', *parts)
+
+
 def _require(cfg, stage_name, keys):
     # cfg is None whenever the whole section is commented out/absent (e.g.
     # copy_force_fields/MD_single_points while fine_tuning is enabled but
@@ -436,7 +469,10 @@ def run_converge_dft_data(config):
             )
         raise ValueError(f"No (structure, vasp_yaml) pairs found under {directory}")
 
-    pipe = Pipeline()
+    # reserve_broker_node=False -- see _submit_reaxff_single_points_batch's
+    # own comment: no reason to dedicate a whole node to just the Flux
+    # broker for chores this size; frees that node for actual work.
+    pipe = Pipeline(reserve_broker_node=False)
     env = vasp_container_env(cores_per_task)
 
     # mpi=True -- CONFIRMED (2026-09-04) required: matensemble.fluxlet.Fluxlet.submit
@@ -821,13 +857,52 @@ def run_build_ff_inputs(config):
     build_reaxff_ensemble_inputs.py is pipeline-local (FF/), not an
     installed EnsembleFFFit module -- loaded via import_module_from_path,
     same mechanism the driver scripts use, rather than a plain import.
+
+    If 'sampled_blocking' is set, the blocking scheme is generated
+    programmatically via build_reaxff_ensemble_inputs.sample_parameter_
+    subsets -- n_variants random subsets of 1..max_params lines from one
+    section (default: 5, Angular), stratified evenly across subset sizes
+    by default -- instead of reading a static 'blocking_scheme' dict from
+    this config. Added (2026-10): activating an entire section at once
+    (the original scheme) let ReaxFF's angular force constants move
+    7-18x their starting value during fitting, severely degrading
+    LAMMPS-reax/c agreement relative to the unfitted seed potential; this
+    caps how many parameters move at once instead, to isolate which ones
+    are safe to free. 'blocking_scheme' is still required (and used
+    as-is) when 'sampled_blocking' isn't set, for backward compatibility.
+
+    sampled_blocking may also be a LIST of per-section dicts (e.g. one
+    each for Bond/Off-diagonal/Angular) instead of a single dict -- added
+    (2026-10) per the user's own explicit choice to keep each fit's
+    unblocked parameters within ONE section rather than mixing sections
+    together (same reasoning as the original single-section design: stays
+    interpretable per parameter class). Each dict's own sample_parameter_
+    subsets call is independent (own pool, own label_prefix -- REQUIRED
+    when sampled_blocking is a list, since the resulting per-section
+    blocking_scheme dicts are merged into one and would otherwise collide
+    on label), and the merged result is what actually gets built. A
+    section whose real combinatorial space (sum of C(pool, k) for k in
+    min_params..max_params) is smaller than n_variants gets every distinct
+    subset exactly once instead of a padded-with-duplicates sample (see
+    sample_parameter_subsets' own docstring) -- relevant here since
+    Off-diagonal's catalog has only 4 real JAX-ReaxFF-mapped parameters
+    (14 total distinct subsets of size 1-3), far fewer than Bond's 24 or
+    Angular's 30.
+
+    parse2fit_seed_runs (optional): restrict the cross-product to
+    specific parse2fit-generated seed directories (by basename, e.g.
+    ['reaxff_run_0', 'reaxff_run_1']) instead of every one found under
+    parse2fit_root.
     """
     from EnsembleFFFit.utilities.general import import_module_from_path
 
     cfg = config['build_ff_inputs']
-    _require(cfg, 'build_ff_inputs', ['parse2fit_root', 'catalog_params', 'blocking_scheme'])
+    _require(cfg, 'build_ff_inputs', ['catalog_params'])
 
-    reaxff_inputs_dir = Path(cfg.get('reaxff_inputs_dir') or config['fine_tuning']['inputs_directory'])
+    parse2fit_root = cfg.get('parse2fit_root', os.path.join('FF', _gen_default(config, 'parse2fit')))
+    reaxff_inputs_dir = Path(cfg.get('reaxff_inputs_dir')
+                              or (config.get('fine_tuning') or {}).get('inputs_directory')
+                              or os.path.join('FF', _gen_default(config, 'reaxff_inputs')))
     ffield_path = cfg.get('ffield')
 
     ensemble_module = import_module_from_path(
@@ -835,13 +910,50 @@ def run_build_ff_inputs(config):
         str(Path(__file__).parent / 'FF' / 'build_reaxff_ensemble_inputs.py'),
     )
 
+    sampled_cfg = cfg.get('sampled_blocking')
+    if sampled_cfg:
+        if not ffield_path:
+            raise ValueError("build_ff_inputs.sampled_blocking requires build_ff_inputs.ffield -- "
+                              "needed to determine which catalog lines are real, optimizable "
+                              "JAX-ReaxFF parameters (see sample_parameter_subsets' own docstring).")
+        tagged_lines = ensemble_module.tag_params_catalog(cfg['catalog_params'])
+        section_index_tuples = {p[0:3] for _, _, p, _ in tagged_lines if p is not None}
+        _, valid_param_keys = ensemble_module.get_ffield_parameter_values(ffield_path, section_index_tuples)
+
+        sampled_specs = sampled_cfg if isinstance(sampled_cfg, list) else [sampled_cfg]
+        blocking_scheme = {}
+        for spec in sampled_specs:
+            if isinstance(sampled_cfg, list) and not spec.get('label_prefix'):
+                raise ValueError("build_ff_inputs.sampled_blocking: label_prefix is required on every "
+                                  "entry when sampled_blocking is a list (per-section pools would "
+                                  "otherwise collide on label) -- missing from entry with "
+                                  f"section={spec.get('section')}.")
+            section_scheme = ensemble_module.sample_parameter_subsets(
+                tagged_lines, valid_param_keys,
+                section=spec.get('section', 5),
+                n_variants=spec.get('n_variants', 75),
+                min_params=spec.get('min_params', 1),
+                max_params=spec.get('max_params', 6),
+                stratify=spec.get('stratify', True),
+                rng_seed=spec.get('seed'),
+                label_prefix=spec.get('label_prefix'),
+            )
+            overlap = set(section_scheme) & set(blocking_scheme)
+            if overlap:
+                raise ValueError(f"build_ff_inputs.sampled_blocking: label collision across sections: {overlap}")
+            blocking_scheme.update(section_scheme)
+    else:
+        _require(cfg, 'build_ff_inputs', ['blocking_scheme'])
+        blocking_scheme = cfg['blocking_scheme']
+
     written_folders = ensemble_module.build_reaxff_ensemble_inputs(
-        parse2fit_root=cfg['parse2fit_root'],
+        parse2fit_root=parse2fit_root,
         catalog_params_path=cfg['catalog_params'],
-        blocking_scheme=cfg['blocking_scheme'],
+        blocking_scheme=blocking_scheme,
         output_dir=reaxff_inputs_dir,
         ffield_path=ffield_path,
         unbounded_half_width=cfg.get('unbounded_half_width', 1e4),
+        seed_runs=cfg.get('parse2fit_seed_runs'),
     )
     print(f"Wrote {len(written_folders)} reaxff_inputs folder(s) under {reaxff_inputs_dir}")
 
@@ -898,12 +1010,18 @@ def run_fit_and_validate(config):
         )
 
     if fine_tuning_cfg:
-        _require(fine_tuning_cfg, 'fine_tuning', ['run_directory', 'inputs_directory', 'ff_task'])
+        _require(fine_tuning_cfg, 'fine_tuning', ['run_directory', 'ff_task'])
+        fine_tuning_cfg = {**fine_tuning_cfg,
+                            'inputs_directory': fine_tuning_cfg.get('inputs_directory')
+                                                 or os.path.join('FF', _gen_default(config, 'reaxff_inputs'))}
     if ft_md_cfg:
         _require(ft_md_cfg, 'finite_temperature_md',
                   ['output_directory', 'foundation_model', 'in_file', 'lammps_inputs_directory'])
 
-    pipe = Pipeline()
+    # reserve_broker_node=False -- see _submit_reaxff_single_points_batch's
+    # own comment: no reason to dedicate a whole node to just the Flux
+    # broker; frees that node for actual fitting/MD chores.
+    pipe = Pipeline(reserve_broker_node=False)
 
     if fine_tuning_cfg:
         ff_run_directory = fine_tuning_cfg['run_directory']
@@ -1077,24 +1195,32 @@ def run_prepare_reaxff_validation_structures(config):
 # Stage: stage_reaxff_validation_force_fields
 # ---------------------------------------------------------------------------
 
-def _stage_force_fields(source_root, dest_roots, target_name='ffield'):
+def _stage_force_fields(source_root, dest_roots, target_name='ffield', source_pattern='new_FF_*'):
     """
-    Copies+renames every already-fitted ReaxFF force field
-    (new_FF_<unique_id>_<loss_str>, excluding *.txt reports) from
-    source_root into every listed dest_roots (plural -- each caller's
-    downstream stage needs its OWN run_directory tree, even when the
-    staged ffield content is identical across all of them: MDMatEnsemble
-    writes each run's properties.json back into the same run_directory
-    the ffield came from, so sharing one run_directory across multiple
-    downstream stages would silently collide/overwrite), each mirrored as
-    <same subtree>/target_name -- needed so MDMatEnsemble's own
-    check_files-anchored proximity matching can find them. Shared by
+    Copies+renames every already-fitted ReaxFF force field from source_root
+    into every listed dest_roots (plural -- each caller's downstream stage
+    needs its OWN run_directory tree, even when the staged ffield content
+    is identical across all of them: MDMatEnsemble writes each run's
+    properties.json back into the same run_directory the ffield came from,
+    so sharing one run_directory across multiple downstream stages would
+    silently collide/overwrite), each mirrored as <same subtree>/
+    target_name -- needed so MDMatEnsemble's own check_files-anchored
+    proximity matching can find them. Shared by
     run_stage_reaxff_validation_force_fields and
     run_stage_ft_md_force_fields (see each for its own source/dest
     config) -- a flat, one-time pass over every already-completed fit,
     not reactive per fit_reaxff completion (see
     JaxReaxFF_Integration_Plan.md's own sign-off on flat over reactive for
     this kind of validation step).
+
+    source_pattern (default 'new_FF_*', excluding *.txt reports): the glob
+    used to find each combo's own force-field file under source_root.
+    Raw fine_tuning.run_directory output is named new_FF_<unique_id>_
+    <loss_str> (JAX-ReaxFF's own convention) -- the default. Pass
+    'ffield' instead to source from an ALREADY-staged, already-renamed
+    tree instead (e.g. rank_reaxff_validation's own dest_dir/selected
+    force fields, which already hold a file literally named 'ffield') --
+    see run_stage_ft_md_force_fields's own docstring for why this matters.
     """
     source_root = Path(source_root)
     dest_roots = [Path(d) for d in dest_roots]
@@ -1102,7 +1228,7 @@ def _stage_force_fields(source_root, dest_roots, target_name='ffield'):
     copied = []
     skipped = []
     for results_dir in sorted(p for p in source_root.rglob('*') if p.is_dir()):
-        matches = sorted(p for p in results_dir.glob("new_FF_*") if not p.name.endswith('.txt'))
+        matches = sorted(p for p in results_dir.glob(source_pattern) if not p.name.endswith('.txt'))
         if len(matches) != 1:
             if matches:
                 skipped.append((results_dir, len(matches)))
@@ -1116,7 +1242,7 @@ def _stage_force_fields(source_root, dest_roots, target_name='ffield'):
 
     print(f"Staged {len(copied)} fitted-force-field copy(ies) from {source_root} into {dest_roots}")
     if skipped:
-        print(f"Skipped {len(skipped)} directory(ies) with != 1 new_FF_* match (ambiguous, num_trials>1?):")
+        print(f"Skipped {len(skipped)} directory(ies) with != 1 '{source_pattern}' match (ambiguous, num_trials>1?):")
         for d, n in skipped:
             print(f"  {d}: {n} matches")
 
@@ -1124,31 +1250,59 @@ def _stage_force_fields(source_root, dest_roots, target_name='ffield'):
 def run_stage_reaxff_validation_force_fields(config):
     """See _stage_force_fields. Stages fine_tuning.run_directory's fitted
     force fields into reaxff_validation_single_points' aimd/training
-    force_fields trees."""
+    force_fields trees -- always the FULL ensemble (source_pattern stays
+    at its 'new_FF_*' default), since this feeds the static ranking that
+    ft_md_force_fields' own downselection depends on in the first place."""
     cfg = config['reaxff_validation_force_fields']
-    _require(cfg, 'reaxff_validation_force_fields', ['source_root', 'dest_roots'])
-    _stage_force_fields(cfg['source_root'], cfg['dest_roots'], cfg.get('target_name', 'ffield'))
+    source_root = cfg.get('source_root') or (config.get('fine_tuning') or {}).get('run_directory')
+    if not source_root:
+        raise ValueError("reaxff_validation_force_fields: no source_root given and fine_tuning.run_directory "
+                          "isn't set either -- need one or the other to know where the fitted force fields are.")
+    dest_roots = cfg.get('dest_roots') or [
+        os.path.join('MD', _gen_default(config, 'single_points', 'reaxff_validation', 'aimd', 'force_fields')),
+        os.path.join('MD', _gen_default(config, 'single_points', 'reaxff_validation', 'training', 'force_fields')),
+    ]
+    _stage_force_fields(source_root, dest_roots, cfg.get('target_name', 'ffield'),
+                         cfg.get('source_pattern', 'new_FF_*'))
 
 
 def run_stage_ft_md_force_fields(config):
     """
-    See _stage_force_fields. Stages fine_tuning.run_directory's fitted
-    force fields (all of them, by explicit choice -- confirmed 2026-09:
-    running the finite-temperature coordination-stability check across
-    every fitted candidate, not just rank_reaxff_validation's top picks,
-    catches a motif breakdown that the static single-point ranking might
-    miss) into finite_temperature_md_batch's own force_fields tree.
+    See _stage_force_fields. Stages force fields into finite_temperature_
+    md_batch's own force_fields tree.
+
+    source_root/source_pattern together decide the SCOPE here -- CHANGED
+    (2026-10) from an earlier hardcoded choice to always stage every
+    fitted candidate from fine_tuning.run_directory (source_pattern=
+    'new_FF_*'), on the reasoning that the finite-temperature coordination
+    check might catch a motif breakdown the static single-point ranking
+    missed. That reasoning still holds as an OPTION, not a requirement:
+    point source_root back at fine_tuning.run_directory with the default
+    source_pattern to run the full ensemble again, or at rank_reaxff_
+    validation's own dest_dir (e.g. MD/single_points/reaxff_validation/
+    selected/force_fields) with source_pattern: ffield (that tree's files
+    are already renamed, not new_FF_*-named -- see _stage_force_fields'
+    own docstring) to run only whatever rank_reaxff_validation selected --
+    which itself is fully configurable via that stage's own number_to_copy/
+    strategy (e.g. number_to_copy equal to the full ensemble size runs
+    everything, same effect as pointing back at fine_tuning.run_directory,
+    through the same one selection knob rather than a second separate one
+    here).
     """
     cfg = config['ft_md_force_fields']
-    _require(cfg, 'ft_md_force_fields', ['source_root', 'dest_roots'])
-    _stage_force_fields(cfg['source_root'], cfg['dest_roots'], cfg.get('target_name', 'ffield'))
+    _require(cfg, 'ft_md_force_fields', ['source_root'])
+    dest_roots = cfg.get('dest_roots') or [
+        os.path.join('MD', _gen_default(config, 'finite_temperature', 'coordination_check', 'force_fields')),
+    ]
+    _stage_force_fields(cfg['source_root'], dest_roots, cfg.get('target_name', 'ffield'),
+                         cfg.get('source_pattern', 'new_FF_*'))
 
 
 # ---------------------------------------------------------------------------
 # Stage: reaxff_validation_single_points
 # ---------------------------------------------------------------------------
 
-def _submit_reaxff_single_points_batch(sub_cfg, chore_name):
+def _submit_reaxff_single_points_batch(sub_cfg, chore_name, config=None, default_run_directory_parts=()):
     """
     Shared submission logic for one (validation or training) LAMMPS
     single-points batch -- flat, non-reactive: every staged force field x
@@ -1160,12 +1314,26 @@ def _submit_reaxff_single_points_batch(sub_cfg, chore_name):
     validation's AIMD trajectory tree and training's much more
     heterogeneous one -- a single fixed depth, like MD_uq_single_points'
     own parent_levels=8, can't describe both at once).
+
+    run_directory defaults to a generation-scoped MD/generation_<N>/...
+    path (default_run_directory_parts, config's own top-level
+    generation_number) when not explicitly set -- the staged force fields
+    + their resulting properties.json differ per generation.
+    inputs_directory is NOT defaulted this way -- the structures it holds
+    are a one-time POSCAR -> structure.lmp conversion of the fixed DFT/
+    training+validation set (see prepare_reaxff_validation_structures),
+    identical every generation, so it stays required/shared.
     """
     from matensemble.pipeline import Pipeline
     from matensemble.model import Resources
     from EnsembleFFFit.base import MDMatEnsemble
 
-    _require(sub_cfg, chore_name, ['run_directory', 'inputs_directory'])
+    _require(sub_cfg, chore_name, ['inputs_directory'])
+    if not sub_cfg.get('run_directory') and not (config is not None and default_run_directory_parts):
+        raise ValueError(f"{chore_name}: run_directory not set and no default available -- "
+                          f"need one or the other.")
+    sub_cfg = {**sub_cfg, 'run_directory': sub_cfg.get('run_directory')
+                           or os.path.join('MD', _gen_default(config, *default_run_directory_parts))}
 
     options = {'ffield': sub_cfg.get('ffield', 'ffield'),
                'in_file': sub_cfg.get('in_file'),
@@ -1189,7 +1357,12 @@ def _submit_reaxff_single_points_batch(sub_cfg, chore_name):
         raise ValueError(f"No (force field, structure) batches found for {chore_name} -- check "
                           f"run_directory/inputs_directory.")
 
-    pipe = Pipeline()
+    # reserve_broker_node=False -- these single-point chores are cheap
+    # enough (single structure, short LAMMPS run) that dedicating a whole
+    # node to just the Flux broker wastes a full node's worth of
+    # resources; already validated in another workflow to free up that
+    # node for actual single-node chores instead.
+    pipe = Pipeline(reserve_broker_node=False)
 
     @pipe.chore(name=chore_name, **resources_kwargs, env=lammps_container_env(), inherit_env=True)
     def chore_fn(task_dict):
@@ -1220,8 +1393,25 @@ def run_reaxff_validation_single_points(config):
     cfg = config['reaxff_validation_single_points']
     _require(cfg, 'reaxff_validation_single_points', ['validation', 'training'])
 
-    _submit_reaxff_single_points_batch(cfg['validation'], 'run_reaxff_val_lammps')
-    _submit_reaxff_single_points_batch(cfg['training'], 'run_reaxff_train_lammps')
+    # try/except around each sub-batch, not two bare calls -- CONFIRMED
+    # (2026-10) a real gap between this docstring's own claim ("a failure
+    # in one doesn't block the other") and the code: _submit_reaxff_
+    # single_points_batch raises ValueError when a batch's finished_file
+    # filtering leaves zero task_dicts (e.g. validation already 100%
+    # complete while a new structure -- isolated_elements -- was added
+    # only under training/lammps_inputs/), and since validation runs
+    # first, that raise previously aborted training too, even though
+    # training had new work waiting.
+    default_parts = {
+        'validation': ('single_points', 'reaxff_validation', 'aimd', 'force_fields'),
+        'training': ('single_points', 'reaxff_validation', 'training', 'force_fields'),
+    }
+    for sub_key, chore_name in [('validation', 'run_reaxff_val_lammps'), ('training', 'run_reaxff_train_lammps')]:
+        try:
+            _submit_reaxff_single_points_batch(cfg[sub_key], chore_name, config=config,
+                                                default_run_directory_parts=default_parts[sub_key])
+        except ValueError as e:
+            print(f"{chore_name}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1297,13 +1487,21 @@ def run_check_coordination_stability(config):
     from EnsembleFFFit.utilities.general import import_module_from_path
 
     cfg = config['check_coordination_stability']
-    _require(cfg, 'check_coordination_stability',
-              ['run_directory', 'inputs_directory', 'coordination_task'])
+    _require(cfg, 'check_coordination_stability', ['coordination_task'])
+    cfg = {**cfg,
+           'run_directory': cfg.get('run_directory') or os.path.join(
+               'MD', _gen_default(config, 'finite_temperature', 'coordination_check', 'force_fields')),
+           # inputs_directory is NOT generation-scoped: the 3 reference
+           # structures (pre-MD structure.lmp) are a fixed benchmark,
+           # identical every generation -- see sample_ft_md_structures.
+           'inputs_directory': cfg.get('inputs_directory')
+                                or 'MD/finite_temperature/coordination_check/lammps_inputs/structures'}
 
     module = import_module_from_path('coordination_task_module', cfg['coordination_task'])
     entry_point = getattr(module, cfg.get('entry_point', 'check_coordination_stability'))
 
     json_file = cfg.get('json_file', os.path.join(cfg['run_directory'], 'coordination_comparison.json'))
+    distance_cutoffs = tuple(cfg['distance_cutoffs']) if cfg.get('distance_cutoffs') else (0.5, 1)
     deviation_dct, failures = entry_point(
         run_directory=cfg['run_directory'],
         inputs_directory=cfg['inputs_directory'],
@@ -1313,6 +1511,8 @@ def run_check_coordination_stability(config):
         oxi_dct=cfg.get('oxi_dct'),
         use_weights=cfg.get('use_weights', True),
         json_file=json_file,
+        distance_cutoffs=distance_cutoffs,
+        agg=cfg.get('agg', 'mean'),
     )
     n_failed_structures = sum(len(d) for d in failures.values())
     print(f"Wrote coordination comparison for {len(deviation_dct)} force field(s) to {json_file} "
@@ -1398,6 +1598,139 @@ def run_check_coordination_stability(config):
 
 
 # ---------------------------------------------------------------------------
+# Stage: select_next_generation_force_field
+# ---------------------------------------------------------------------------
+
+def run_select_next_generation_force_field(config):
+    """
+    Picks the single force field to carry forward into the next fitting
+    generation, per the user's own selection scheme (2026-10): combined
+    energy/force objective score decides ranking, coordination is a
+    go/no-go GATE rather than a term folded into that score.
+
+    Walks ranking_csv (run_rank_reaxff_validation's own ranking.csv,
+    ascending by combined_score -- lower is better) from best to worst,
+    and copies the first candidate that also clears the coordination gate
+    (checked against check_coordination_stability's own coordination_json,
+    {"deviations": {ff_label: {md_name: {element: norm_diff}}},
+    "failures": {ff_label: {md_name: error}}}) to
+    FF/generation_<generation_number>/<ff_label>/ffield.
+
+    The gate has two parts:
+      (a) completeness -- ff_label must not appear in `failures` at all,
+          i.e. every structure's coordination MD run itself completed
+          rather than crashing/going unstable (the user's own chosen
+          definition of "a score is recorded ... indicating passing
+          runs" -- NOT a stricter per-(structure,element) completeness
+          check, since a structure that ran fine populates every element
+          for itself by construction; only a crashed run leaves gaps).
+      (b) tail exclusion -- this ff_label's own mean_cn_deviation (same
+          mean-over-every-(structure,element)-value formula
+          run_check_coordination_stability's own ranking table uses) must
+          fall at or below the coordination_percentile-th percentile
+          (default 80) of the mean_cn_deviation distribution across every
+          force field that passed gate (a) -- i.e. excluding the worst
+          (100 - coordination_percentile)% tail, per the user's own
+          observation that this distribution has a long tail of much
+          worse performers.
+
+    Writes a decision-trail report (selection_report_path) listing every
+    candidate walked in ranked order and why it was skipped or selected,
+    so the choice is auditable without re-deriving it from the raw CSV/
+    JSON by hand. Raises if no candidate clears the gate -- a silent skip
+    would leave a stale/missing generation directory, which the next
+    fitting round's build_ff_inputs would then either reuse unnoticed or
+    fail on in a much less legible way.
+    """
+    cfg = config['select_next_generation_force_field']
+
+    # ranking_csv/coordination_json/ffield_source_root default off the
+    # CURRENT generation (the top-level generation_number this evaluates);
+    # this stage's own generation_number key is the generation being
+    # CREATED, defaulting to current + 1 -- the one place a single config
+    # needs both a source and destination generation at once.
+    ranking_csv = cfg.get('ranking_csv') or os.path.join(
+        'MD', _gen_default(config, 'single_points', 'reaxff_validation', 'selected', 'force_fields', 'ranking.csv'))
+    coordination_json = cfg.get('coordination_json') or os.path.join(
+        'MD', _gen_default(config, 'finite_temperature', 'coordination_check', 'coordination_comparison.json'))
+    generation_number = cfg.get('generation_number', config.get('generation_number', 0) + 1)
+    coordination_percentile = cfg.get('coordination_percentile', 80)
+    ffield_source_root = cfg.get('ffield_source_root') or os.path.join(
+        'MD', _gen_default(config, 'single_points', 'reaxff_validation', 'selected', 'force_fields'))
+    ffield_source_pattern = cfg.get('ffield_source_pattern', 'ffield')
+    dest_root = cfg.get('dest_root', 'FF')
+    dest_dir = os.path.join(dest_root, f'generation_{generation_number}')
+    selection_report_path = cfg.get('selection_report_path', os.path.join(dest_dir, 'selection_report.txt'))
+
+    with open(ranking_csv) as f:
+        rows = list(csv.DictReader(f))
+    # Already sorted ascending by combined_score by run_rank_reaxff_validation,
+    # but sort explicitly so this stage doesn't silently depend on file order.
+    rows.sort(key=lambda r: float(r['combined_score']))
+
+    with open(coordination_json) as f:
+        cn_data = json.load(f)
+    deviations = cn_data['deviations']
+    failures = cn_data['failures']
+
+    mean_cn = {}
+    for ff_label, structure_dct in deviations.items():
+        values = [v for element_dct in structure_dct.values() for v in element_dct.values()]
+        if values:
+            mean_cn[ff_label] = sum(values) / len(values)
+
+    complete_labels = [l for l in mean_cn if l not in failures]
+    if not complete_labels:
+        raise RuntimeError(f"No force field in {coordination_json} has zero failures[] entries "
+                            f"(every candidate failed at least one coordination MD run) -- nothing to select.")
+    cn_cutoff = float(np.percentile([mean_cn[l] for l in complete_labels], coordination_percentile))
+
+    report_lines = [
+        f"Objective-function ranking: {ranking_csv} ({len(rows)} candidates)",
+        f"Coordination data: {coordination_json} ({len(complete_labels)} force field(s) with zero failed "
+        f"structures, {len(failures)} with >=1 failed structure)",
+        f"Coordination gate: ff_label must (a) have zero failures[] entries, and (b) mean_cn_deviation <= "
+        f"{coordination_percentile}th percentile of the {len(complete_labels)} fully-passing force fields "
+        f"({cn_cutoff:.6f})",
+        "",
+    ]
+
+    selected = None
+    for row in rows:
+        ff_label = row['ff_label']
+        if ff_label in failures:
+            report_lines.append(f"  SKIP {ff_label} (combined_score={row['combined_score']}): "
+                                 f"failed coordination MD on {sorted(failures[ff_label])}")
+        elif ff_label not in mean_cn:
+            report_lines.append(f"  SKIP {ff_label} (combined_score={row['combined_score']}): "
+                                 f"not present in coordination data (not yet run?)")
+        elif mean_cn[ff_label] > cn_cutoff:
+            report_lines.append(f"  SKIP {ff_label} (combined_score={row['combined_score']}): "
+                                 f"mean_cn_deviation={mean_cn[ff_label]:.6f} > cutoff {cn_cutoff:.6f} "
+                                 f"(worst {100 - coordination_percentile:.0f}% tail)")
+        else:
+            report_lines.append(f"  PASS {ff_label} (combined_score={row['combined_score']}, "
+                                 f"mean_cn_deviation={mean_cn[ff_label]:.6f})")
+            selected = ff_label
+            break
+
+    if selected is None:
+        report_lines.append("\nNo candidate passed both gates.")
+        print_and_write(report_lines, selection_report_path)
+        raise RuntimeError(f"No force field in {ranking_csv} passed the coordination gate -- see {selection_report_path}")
+
+    src = os.path.join(ffield_source_root, selected, ffield_source_pattern)
+    out_dir = os.path.join(dest_dir, selected)
+    os.makedirs(out_dir, exist_ok=True)
+    dest = os.path.join(out_dir, 'ffield')
+    shutil.copy2(src, dest)
+    report_lines.append(f"\nCopied {src} -> {dest}")
+
+    print_and_write(report_lines, selection_report_path)
+    print(f"Selected {selected} for generation {generation_number} -- see {selection_report_path}")
+
+
+# ---------------------------------------------------------------------------
 # Stage: rank_reaxff_validation
 # ---------------------------------------------------------------------------
 
@@ -1431,29 +1764,54 @@ def run_rank_reaxff_validation(config):
     Parses the LAMMPS single-point output from reaxff_validation_single_points
     plus the DFT ground truth (properties.json under DFT/validation and
     DFT/training, from DFT/vasprun_to_properties.py) into
-    {label: {run: {image: props}}} dicts, unit-converts the LAMMPS side
-    (real units -> eV -- lammps_energy_to_ev below MUST be updated if the
-    LAMMPS recipe's own `units` directive ever changes away from "real",
-    see EnsembleFFFit.analysis.best_force_field.convert_units's own
-    docstring), and ranks every fitted force field via
+    {label: {run: {image: props}}} dicts, unit-converts the DFT side (VASP's
+    native eV/eV-per-Angstrom -> kcal/mol/kcal-mol-per-Angstrom --
+    ev_to_kcal_mol below MUST be updated if that ever needs to change; see
+    EnsembleFFFit.analysis.best_force_field.convert_units_to_kcal_mol's own
+    docstring for why kcal/mol throughout, not eV -- the LAMMPS side is
+    left as-is, since LAMMPS's own "real" units are already kcal/mol
+    natively), and ranks every fitted force field via
     EnsembleFFFit.analysis.best_force_field.rank_force_fields_combined --
     see that function's own docstring for the full validation/training
-    combination scheme (relative energy + forces on DFT/validation's AIMD
-    trajectories, forces only on DFT/training). Prints + persists the
-    ranking table, then optionally downselects/copies the top performers
-    forward (e.g. for the coordination-number/FT-MD comparison this feeds
-    into next) via the same select_and_copy mechanism downselect_force_fields
-    used to use.
+    combination scheme (forces on both DFT/validation's AIMD trajectories
+    and DFT/training). Prints + persists the ranking table, then
+    optionally downselects/copies the top performers forward (e.g. for the
+    coordination-number/FT-MD comparison this feeds into next) via the
+    same select_and_copy mechanism downselect_force_fields used to use.
+
+    If 'training_yaml'/'validation_yaml' are both set, also wires in the
+    YAML-driven (reaxff_newest_kT.yml/reaxff_validation.yml) relative-
+    energy comparison via MD/single_points/reaxff_validation/
+    relative_energy_comparison.py (dynamically imported, same
+    import_module_from_path mechanism as coordination_task/fine_tuning.
+    ff_task above -- see Paper_Analysis.md for why this needed its own
+    module: ReaxFF's relative energies use parse2fit's own subtract/add/
+    get_divisors combination logic, not a simple frame-0 difference, and
+    apply to arbitrary non-trajectory structures (formation energies, EoS
+    points, defects) that have no "own trajectory frame 0" at all --
+    reaxff_validation.yml expresses validation's own AIMD trajectories
+    through this SAME mechanism (subtract: [frame 0], get_divisors: True),
+    which is why this stage no longer also computes a separate, less
+    rigorous frame-0-relative energy deviation for validation -- see
+    rank_force_fields_combined's own docstring). Left unset, this stage
+    behaves exactly as before (no new columns, no error).
     """
-    from EnsembleFFFit.analysis.best_force_field import convert_units, rank_force_fields_combined
+    from EnsembleFFFit.analysis.best_force_field import (
+        convert_units_to_kcal_mol, rank_force_fields_combined, write_per_structure_force_deviations)
     from EnsembleFFFit.analysis.dict_parsers import PropertiesOnlyParser
+    from EnsembleFFFit.utilities.general import import_module_from_path
 
     cfg = config['rank_reaxff_validation']
-    _require(cfg, 'rank_reaxff_validation',
-              ['validation_ff_dir', 'validation_reference_root',
-               'training_ff_dir', 'training_reference_root'])
+    _require(cfg, 'rank_reaxff_validation', ['validation_reference_root', 'training_reference_root'])
+    cfg = {**cfg,
+           'validation_ff_dir': cfg.get('validation_ff_dir') or os.path.join(
+               'MD', _gen_default(config, 'single_points', 'reaxff_validation', 'aimd', 'force_fields')),
+           'training_ff_dir': cfg.get('training_ff_dir') or os.path.join(
+               'MD', _gen_default(config, 'single_points', 'reaxff_validation', 'training', 'force_fields')),
+           'dest_dir': cfg.get('dest_dir') or os.path.join(
+               'MD', _gen_default(config, 'single_points', 'reaxff_validation', 'selected', 'force_fields'))}
 
-    lammps_energy_to_ev = cfg.get('lammps_energy_to_ev', 23.060548867)
+    ev_to_kcal_mol = cfg.get('ev_to_kcal_mol', 23.060548867)
 
     # PropertiesOnlyParser, not the default ASEParser -- CONFIRMED (2026-09)
     # ASEParser's existence_check requires a co-located POSCAR alongside
@@ -1466,22 +1824,66 @@ def run_rank_reaxff_validation(config):
     # just the LAMMPS side) for consistency -- "structure" is never read
     # by rank_force_fields_combined/get_ff_deviations anyway, only
     # energy/fx/fy/fz.
-    validation_ff_dct_raw = parse_labeled_tree(cfg['validation_ff_dir'], parser_cls=PropertiesOnlyParser)
-    validation_reference_dct = {"DFT": parse_reference_tree(cfg['validation_reference_root'], parser_cls=PropertiesOnlyParser)}
-    validation_ff_dct = {label: convert_units(_drop_first_run_segment(run_dct), lammps_energy_to_ev)
-                         for label, run_dct in validation_ff_dct_raw.items()}
+    # dict_parsing_num_processes: the dominant cost in parsing either
+    # *_ff_dir tree is per-structure file I/O (properties.json reads),
+    # repeated once per fitted force field -- see parse_labeled_tree's own
+    # docstring for why this parallelizes cleanly across labels (each
+    # force field's own subtree is independent). Defaults to os.cpu_count()
+    # here (not None/sequential) since this is the one place in the
+    # pipeline that's shown to dominate wall-time at real ensemble sizes;
+    # parse_reference_tree (the DFT ground truth) is NOT parallelized the
+    # same way -- it's parsed once per call, not once per label, so it's
+    # a small fraction of the cost and not worth the added complexity.
+    parse_num_processes = cfg.get('dict_parsing_num_processes', os.cpu_count())
 
-    training_ff_dct_raw = parse_labeled_tree(cfg['training_ff_dir'], parser_cls=PropertiesOnlyParser)
-    training_reference_dct = {"DFT": parse_reference_tree(cfg['training_reference_root'], parser_cls=PropertiesOnlyParser)}
-    training_ff_dct = {label: convert_units(_drop_first_run_segment(run_dct), lammps_energy_to_ev)
-                       for label, run_dct in training_ff_dct_raw.items()}
+    validation_ff_dct = {label: _drop_first_run_segment(run_dct) for label, run_dct in
+                         parse_labeled_tree(cfg['validation_ff_dir'], parser_cls=PropertiesOnlyParser,
+                                             num_processes=parse_num_processes).items()}
+    validation_reference_dct = {"DFT": convert_units_to_kcal_mol(
+        parse_reference_tree(cfg['validation_reference_root'], parser_cls=PropertiesOnlyParser), ev_to_kcal_mol)}
+
+    training_ff_dct = {label: _drop_first_run_segment(run_dct) for label, run_dct in
+                       parse_labeled_tree(cfg['training_ff_dir'], parser_cls=PropertiesOnlyParser,
+                                           num_processes=parse_num_processes).items()}
+    training_reference_dct = {"DFT": convert_units_to_kcal_mol(
+        parse_reference_tree(cfg['training_reference_root'], parser_cls=PropertiesOnlyParser), ev_to_kcal_mol)}
+
+    # Per-structure force deviations, written straight into each force
+    # field's own run directory -- forces only, no energy column (see
+    # write_per_structure_force_deviations's own docstring for why).
+    write_per_structure_force_deviations(validation_ff_dct, validation_reference_dct, cfg['validation_ff_dir'])
+    write_per_structure_force_deviations(training_ff_dct, training_reference_dct, cfg['training_ff_dir'])
+
+    # Optional: the YAML-driven relative-energy comparison (see this
+    # function's own docstring). Both training_yaml/validation_yaml must
+    # be set, or neither is used -- no partial wiring.
+    training_relative_energy_dct = training_relative_energy_reference_dct = None
+    validation_relative_energy_dct = validation_relative_energy_reference_dct = None
+    if cfg.get('training_yaml') and cfg.get('validation_yaml'):
+        relative_energy_module = import_module_from_path(
+            'relative_energy_comparison',
+            cfg.get('relative_energy_task', 'MD/single_points/reaxff_validation/relative_energy_comparison.py'))
+        training_rel_e_dct, validation_rel_e_dct = relative_energy_module.build_relative_energy_dcts(
+            cfg['training_yaml'], cfg['training_reference_root'], cfg['training_ff_dir'],
+            cfg['validation_yaml'], cfg['validation_reference_root'], cfg['validation_ff_dir'],
+            num_processes=cfg.get('relative_energy_num_processes'))
+
+        training_relative_energy_reference_dct = {"DFT": training_rel_e_dct.pop("DFT")}
+        training_relative_energy_dct = training_rel_e_dct
+        validation_relative_energy_reference_dct = {"DFT": validation_rel_e_dct.pop("DFT")}
+        validation_relative_energy_dct = validation_rel_e_dct
 
     table_lines, labels, scores = rank_force_fields_combined(
         validation_ff_dct, validation_reference_dct,
         training_ff_dct, training_reference_dct,
-        validation_energy_weight=cfg.get('validation_energy_weight', 1.0),
         validation_force_weight=cfg.get('validation_force_weight', 1.0),
         training_force_weight=cfg.get('training_force_weight', 1.0),
+        training_relative_energy_dct=training_relative_energy_dct,
+        training_relative_energy_reference_dct=training_relative_energy_reference_dct,
+        validation_relative_energy_dct=validation_relative_energy_dct,
+        validation_relative_energy_reference_dct=validation_relative_energy_reference_dct,
+        training_relative_energy_weight=cfg.get('training_relative_energy_weight', 1.0),
+        validation_relative_energy_weight=cfg.get('validation_relative_energy_weight', 1.0),
     )
     print("\n".join(table_lines))
 
@@ -1500,12 +1902,27 @@ def run_rank_reaxff_validation(config):
         print("\n".join(selected_lines))
 
     ranking_path = os.path.join(dest_dir or cfg['validation_ff_dir'], "ranking.txt")
-    header = (f"validation_energy_weight={cfg.get('validation_energy_weight', 1.0)} "
-              f"validation_force_weight={cfg.get('validation_force_weight', 1.0)} "
+    header = (f"validation_force_weight={cfg.get('validation_force_weight', 1.0)} "
               f"training_force_weight={cfg.get('training_force_weight', 1.0)} "
-              f"lammps_energy_to_ev={lammps_energy_to_ev}")
+              f"ev_to_kcal_mol={ev_to_kcal_mol} (forces: kcal/mol/Angstrom, relative energy: kcal/mol)")
+    if training_relative_energy_dct is not None:
+        header += (f" training_relative_energy_weight={cfg.get('training_relative_energy_weight', 1.0)}"
+                   f" validation_relative_energy_weight={cfg.get('validation_relative_energy_weight', 1.0)}")
     print_and_write(table_lines + selected_lines, ranking_path, header=header)
     print(f"Wrote ranking to {ranking_path}")
+
+    # Plain CSV alongside the .txt report (no metadata/header-comment line,
+    # no trailing "Selected N force field(s)..." text) -- for plotting in
+    # an external script. table_lines is whitespace-column-aligned with no
+    # internal spaces in any field (ff_label uses underscores, every other
+    # column is numeric), so a plain split()/','.join() round-trips it
+    # exactly into comma-separated form, header row included -- robust to
+    # however many of the optional extra_columns (train_rel_e_dev_kcalmol/
+    # val_rel_e_dev_kcalmol) are present.
+    ranking_csv_path = os.path.splitext(ranking_path)[0] + ".csv"
+    with open(ranking_csv_path, "w") as f:
+        f.write("\n".join(",".join(line.split()) for line in table_lines) + "\n")
+    print(f"Wrote ranking CSV to {ranking_csv_path}")
 
 
 # Order matters for --stage all -- this is the actual pipeline sequence,
@@ -1523,6 +1940,7 @@ STAGES = {
     'stage_ft_md_force_fields': run_stage_ft_md_force_fields,
     'finite_temperature_md_batch': run_finite_temperature_md_batch,
     'check_coordination_stability': run_check_coordination_stability,
+    'select_next_generation_force_field': run_select_next_generation_force_field,
 }
 
 

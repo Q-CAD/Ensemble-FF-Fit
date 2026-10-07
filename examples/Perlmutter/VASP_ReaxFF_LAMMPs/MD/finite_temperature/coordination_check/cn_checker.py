@@ -10,8 +10,23 @@ Ported from run_pipeline/logic_locations/LAMMPs/cn_checker.py (the original
 standalone script), refactored into a plain function
 (check_coordination_stability) with explicit keyword arguments instead of
 an argparse Namespace, so run_pipeline.py can call it directly -- the
-underlying algorithm (pymatgen's CrystalNN, per-element RMS norm of the
-per-site CN deviation) is UNCHANGED. This is deliberately kept swappable,
+underlying near-neighbor algorithm is pymatgen's CrystalNN.
+
+Per-element deviation aggregation defaults to the MEAN absolute per-site
+CN delta (agg='mean'; 'median' and the original 'rms', i.e.
+np.linalg.norm, are also available) -- 2026-10, switched away from a pure
+RMS/L2 norm over all sites of an element, which let a single borderline
+site (e.g. one whose nearest-neighbor count flips due to a CrystalNN/
+Voronoi neighbor-inclusion threshold crossing) dominate the whole
+per-element number even when every other site was essentially unchanged.
+distance_cutoffs is also now exposed (default (0.5, 1), CrystalNN's own
+default) -- CrystalNN penalizes neighbor distances beyond
+covalent-radius-sum + distance_cutoffs[0] with a smooth cosine taper down
+to zero weight at covalent-radius-sum + distance_cutoffs[1]; widening this
+window widens that smooth taper (fewer neighbors sitting exactly at the
+cliff edge) but does NOT prevent the Voronoi tessellation itself from
+discretely adding/dropping a facet, which is a separate, harder-to-avoid
+source of jumpiness inherent to any Voronoi-based neighbor list. This is deliberately kept swappable,
 not folded into run_pipeline.py itself: per JaxReaxFF_Integration_Plan.md's
 own note (2026-09), CrystalNN's default weighted-CN worked reasonably well
 at catching a full motif breakdown but wasn't the most descriptive metric,
@@ -37,9 +52,27 @@ from pymatgen.analysis.local_env import CrystalNN
 from pymatgen.io.lammps.data import LammpsData
 
 
+def aggregate_cn_deltas(deltas, agg='mean'):
+    """
+    Collapse one element's per-site CN deltas (candidate - reference) into
+    a single deviation number. 'mean'/'median' use the mean/median
+    absolute per-site delta (robust to a single outlier site flipping its
+    CN); 'rms' reproduces the original np.linalg.norm (L2) behavior, which
+    lets one outlier site dominate the whole element's reported deviation.
+    """
+    deltas = np.asarray(deltas, dtype=float)
+    if agg == 'rms':
+        return float(np.linalg.norm(deltas))
+    if agg == 'mean':
+        return float(np.mean(np.abs(deltas)))
+    if agg == 'median':
+        return float(np.median(np.abs(deltas)))
+    raise ValueError(f"Unknown agg {agg!r}, expected 'mean', 'median', or 'rms'")
+
+
 def compute_cn_diff(use_args):
     """Helper function to compute the coordination number difference."""
-    cnn, ref_cn_dct, ff_label, md_name, candidate_structure, use_weights = use_args
+    cnn, ref_cn_dct, ff_label, md_name, candidate_structure, use_weights, agg = use_args
 
     site_els = [str(candidate_structure[i].specie.element) for i in range(len(candidate_structure))]
     unique_site_els = list(np.unique(site_els))
@@ -53,21 +86,21 @@ def compute_cn_diff(use_args):
         matched_els_is = [i for i in range(len(candidate_structure)) if str(candidate_structure[i].specie.element) == uel]
         matched_els_cns = [cnn.get_cn(candidate_structure, i, use_weights=use_weights) for i in matched_els_is]
         ref_els_cns = [ref_cn_dct[md_name][i] for i in matched_els_is]
-        norm_diff = np.linalg.norm(np.subtract(matched_els_cns, ref_els_cns))
-        unique_site_dct[uel] = norm_diff
+        unique_site_dct[uel] = aggregate_cn_deltas(np.subtract(matched_els_cns, ref_els_cns), agg=agg)
 
     return (ff_label, md_name, unique_site_dct)
 
 
-def get_average_coordination_deviation(use_weights, ref_path_dct, path_dictionary):
+def get_average_coordination_deviation(use_weights, ref_path_dct, path_dictionary,
+                                        distance_cutoffs=(0.5, 1), agg='mean'):
     print('Constructing reference coordination numbers...')
-    cnn = CrystalNN(weighted_cn=use_weights)
+    cnn = CrystalNN(weighted_cn=use_weights, distance_cutoffs=distance_cutoffs)
     ref_cn_dct = {}
     for md_name, structure in ref_path_dct.items():
         ref_cn_dct[md_name] = [cnn.get_cn(structure, site_ind, use_weights=use_weights) for site_ind in range(len(structure))]
 
     args_list = [
-        (cnn, ref_cn_dct, p_dct['ff_label'], p_dct['name'], p_dct['structure'], use_weights)
+        (cnn, ref_cn_dct, p_dct['ff_label'], p_dct['name'], p_dct['structure'], use_weights, agg)
         for p_dct in path_dictionary.values()
     ]
 
@@ -170,7 +203,8 @@ def comparison_paths(run_directory, inputs_directory, check_file, structure, ato
 
 def check_coordination_stability(run_directory, inputs_directory, check_file='data.npt_relax',
                                   structure='structure.lmp', atom_style='charge', oxi_dct=None,
-                                  use_weights=True, json_file='comparison.json'):
+                                  use_weights=True, json_file='comparison.json',
+                                  distance_cutoffs=(0.5, 1), agg='mean'):
     """
     Entry point run_pipeline.py's run_check_coordination_stability calls.
 
@@ -185,6 +219,12 @@ def check_coordination_stability(run_directory, inputs_directory, check_file='da
     weighted CN needs oxidation states assigned on both sides for a
     meaningful comparison; there's no safe silent default across
     arbitrary compositions.
+    distance_cutoffs: passed straight to CrystalNN (default (0.5, 1), its
+    own default) -- see this module's docstring for what widening it does
+    and does not fix.
+    agg: per-element deviation aggregation, see aggregate_cn_deltas
+    ('mean' default, 'median', or 'rms' for the original L2-norm
+    behavior).
 
     Returns (deviation_dct, failures): deviation_dct is {ff_label:
     {md_name: {element: norm_diff}}} (ff_label a bare directory name e.g.
@@ -200,7 +240,8 @@ def check_coordination_stability(run_directory, inputs_directory, check_file='da
 
     ref_dct, path_dictionary, failures = comparison_paths(run_directory, inputs_directory, check_file,
                                                            structure, atom_style, oxi_dct)
-    deviation_dct = get_average_coordination_deviation(use_weights, ref_dct, path_dictionary)
+    deviation_dct = get_average_coordination_deviation(use_weights, ref_dct, path_dictionary,
+                                                        distance_cutoffs=distance_cutoffs, agg=agg)
 
     os.makedirs(os.path.dirname(json_file) or '.', exist_ok=True)
     with open(json_file, 'w') as f:
@@ -219,12 +260,15 @@ def main():
     parser.add_argument("--atom_style", "-as", help="LAMMPs structure file atom style", type=str, default='charge')
     parser.add_argument("--oxi_dct", "-od", help="Pymatgen oxidation dictionary in .json format, e.g., '{\"Bi\":3,\"Se\":-2}'", type=json.loads)
     parser.add_argument("--use_weights", "-uw", help="Use weights for pymatgen's CN analysis", type=bool, default=True)
+    parser.add_argument("--distance_cutoffs", "-dc", help="CrystalNN distance_cutoffs as two floats", type=float, nargs=2, default=(0.5, 1))
+    parser.add_argument("--agg", "-a", help="Per-element deviation aggregation: mean, median, or rms", type=str, default='mean')
     args = parser.parse_args()
 
     check_coordination_stability(
         run_directory=args.run_directory, inputs_directory=args.inputs_directory,
         check_file=args.check_file, structure=args.structure, atom_style=args.atom_style,
         oxi_dct=args.oxi_dct, use_weights=args.use_weights, json_file=args.json_file,
+        distance_cutoffs=tuple(args.distance_cutoffs), agg=args.agg,
     )
 
 
