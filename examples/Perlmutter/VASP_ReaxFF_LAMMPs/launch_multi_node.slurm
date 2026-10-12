@@ -68,9 +68,9 @@
 
 #SBATCH -A m2113_g
 #SBATCH -C gpu
-#SBATCH --qos debug
-#SBATCH -t 0:30:00
-#SBATCH -N 2
+#SBATCH --qos interactive
+#SBATCH -t 4:00:00
+#SBATCH -N 4
 #SBATCH --ntasks-per-node=1   # 1 Flux broker per node
 #SBATCH --gpus-per-node=4
 #SBATCH --gpu-bind=closest
@@ -120,7 +120,7 @@ FLUX_PYTHON_BINDINGS="/usr/local/lib/python3.12/site-packages"
 # setting it on `flux start` itself, so rc1 never sees it.
 IMAGE="matensemble:ff-fit"
 # FLUX_CMD="flux resource list"
-FLUX_CMD="env PYTHONPATH=${FLUX_PYTHON_BINDINGS}:${ENSEMBLE_FF_FIT} /opt/basic/bin/python run_pipeline.py --config workflow_config.yaml --stage check_coordination_stability"
+FLUX_CMD="env PYTHONPATH=${FLUX_PYTHON_BINDINGS}:${ENSEMBLE_FF_FIT} /opt/basic/bin/python run_pipeline.py --config workflow_config.yaml --stage all"
 # ================================================================================
 
 export NNODES=${SLURM_JOB_NUM_NODES}

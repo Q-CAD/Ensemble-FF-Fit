@@ -459,14 +459,22 @@ def run_converge_dft_data(config):
             run_directory=dft.run_directory, inputs_directory=dft.inputs_directory,
         )
         if raw_task_dirs and finished_file is not None:
-            sample = raw_task_dirs[:3]
-            raise ValueError(
-                f"Found {len(raw_task_dirs)} (structure, vasp_yaml) pair(s) under {directory}, but every "
-                f"one of them already has a '{finished_file}' match in its working directory -- there's "
-                f"nothing new to run. Sample working director{'y' if len(sample) == 1 else 'ies'}: "
-                f"{sample}{', ...' if len(raw_task_dirs) > 3 else ''}. Set finished_file to null (or a "
-                f"pattern that doesn't already exist everywhere) to rerun them anyway."
-            )
+            # Every (structure, vasp_yaml) pair already converged -- a clean,
+            # expected no-op (DFT convergence is a one-time prerequisite,
+            # shared across every fitting generation, not something later
+            # generations' own runs should ever need to redo), NOT an error.
+            # CHANGED (2026-10) from raising ValueError here: that made
+            # --stage all hard-crash at the very first stage on every
+            # generation after the first, since by then the entire DFT
+            # dataset is always already converged. Still raised below for
+            # the genuinely-different case (nothing found at all, e.g. a
+            # misconfigured directory) -- only THIS "found plenty, all
+            # already finished" case is a no-op now.
+            print(f"converge_dft_data: all {len(raw_task_dirs)} (structure, vasp_yaml) pair(s) under "
+                  f"{directory} already have a '{finished_file}' match -- nothing new to run, skipping. "
+                  f"Set finished_file to null (or a pattern that doesn't already exist everywhere) to "
+                  f"force a rerun.")
+            return
         raise ValueError(f"No (structure, vasp_yaml) pairs found under {directory}")
 
     # reserve_broker_node=False -- see _submit_reaxff_single_points_batch's
@@ -619,6 +627,13 @@ def run_parse2fit_generation(config):
     Combining these with build_reaxff_ensemble_inputs.py's own
     params-blocking-scheme variants is deliberately NOT done here --
     separate follow-up work, not yet designed.
+
+    yaml_directive may also be a LIST of directive paths instead of one --
+    added (2026-10) so multiple weighting-scheme directives (each its own
+    output_directory, per the directive file's own absolute-path
+    convention) can be generated in a single --stage all pass rather than
+    needing one run_pipeline.py invocation per scheme, same reasoning as
+    build_ff_inputs.parse2fit_sources (see that function's own docstring).
     """
     cfg = config['parse2fit_generation']
     _require(cfg, 'parse2fit_generation', ['yaml_directive'])
@@ -631,9 +646,15 @@ def run_parse2fit_generation(config):
     # pipeline's own development.
     from parse2fit.io.readwrite import ReadWriteFactory
 
-    yaml_directive = str(Path(cfg['yaml_directive']).resolve())
-    rw = ReadWriteFactory(yaml_directive).get_writer()
-    rw.write_input_files()
+    yaml_directives = cfg['yaml_directive']
+    if isinstance(yaml_directives, str):
+        yaml_directives = [yaml_directives]
+
+    for directive in yaml_directives:
+        yaml_directive = str(Path(directive).resolve())
+        rw = ReadWriteFactory(yaml_directive).get_writer()
+        rw.write_input_files()
+        print(f"parse2fit_generation: wrote input files for {yaml_directive}")
 
 
 # ---------------------------------------------------------------------------
@@ -889,17 +910,44 @@ def run_build_ff_inputs(config):
     (14 total distinct subsets of size 1-3), far fewer than Bond's 24 or
     Angular's 30.
 
+    margin_fraction (optional, default 0.01): how far (as a fraction of
+    the catalog's own [low, high] bound width) a parameter's bounds get
+    widened when the seed force field's actual current value sits at or
+    outside them -- see build_reaxff_ensemble_inputs.write_params_variant's
+    own docstring. Was hardcoded at 1% until made configurable here
+    (2026-10), per the user's request to loosen it to 10% now that
+    parameter-subset selection is fully automated (so a tighter margin is
+    no longer needed to keep the search space small by hand).
+
     parse2fit_seed_runs (optional): restrict the cross-product to
     specific parse2fit-generated seed directories (by basename, e.g.
     ['reaxff_run_0', 'reaxff_run_1']) instead of every one found under
     parse2fit_root.
+
+    parse2fit_sources (optional): a LIST of {parse2fit_root, seed_runs,
+    label_prefix} dicts, replacing the single parse2fit_root/
+    parse2fit_seed_runs keys above -- added (2026-10) to combine MULTIPLE
+    weighting-scheme parse2fit outputs (each its own parse2fit_generation
+    directive/output_directory) into one shared reaxff_inputs_dir/one
+    fit_and_validate submission, same reasoning as parse2fit_generation's
+    own yaml_directive list support. label_prefix is REQUIRED on every
+    source (prefixed onto each sampled_blocking spec's own label_prefix,
+    or directly onto each static blocking_scheme label) so combos from
+    different sources never collide, even when every source's own
+    parse2fit_root happens to share the same seed-run basenames (e.g.
+    every scheme's own "reaxff_run_0"). sampled_blocking (if set) is
+    re-sampled fresh per source with that source's own combined label
+    prefix -- cheap (pure Python, no jax/GPU involvement), and for an
+    exhaustive section (n_variants >= its real combinatorial space) this
+    reproduces the identical subset set every time regardless of seed, so
+    every source still samples the exact same parameters, just labeled
+    distinctly.
     """
     from EnsembleFFFit.utilities.general import import_module_from_path
 
     cfg = config['build_ff_inputs']
     _require(cfg, 'build_ff_inputs', ['catalog_params'])
 
-    parse2fit_root = cfg.get('parse2fit_root', os.path.join('FF', _gen_default(config, 'parse2fit')))
     reaxff_inputs_dir = Path(cfg.get('reaxff_inputs_dir')
                               or (config.get('fine_tuning') or {}).get('inputs_directory')
                               or os.path.join('FF', _gen_default(config, 'reaxff_inputs')))
@@ -911,6 +959,7 @@ def run_build_ff_inputs(config):
     )
 
     sampled_cfg = cfg.get('sampled_blocking')
+    tagged_lines = valid_param_keys = None
     if sampled_cfg:
         if not ffield_path:
             raise ValueError("build_ff_inputs.sampled_blocking requires build_ff_inputs.ffield -- "
@@ -920,14 +969,22 @@ def run_build_ff_inputs(config):
         section_index_tuples = {p[0:3] for _, _, p, _ in tagged_lines if p is not None}
         _, valid_param_keys = ensemble_module.get_ffield_parameter_values(ffield_path, section_index_tuples)
 
+    def build_blocking_scheme(prefix_override=None):
         sampled_specs = sampled_cfg if isinstance(sampled_cfg, list) else [sampled_cfg]
         blocking_scheme = {}
         for spec in sampled_specs:
-            if isinstance(sampled_cfg, list) and not spec.get('label_prefix'):
-                raise ValueError("build_ff_inputs.sampled_blocking: label_prefix is required on every "
-                                  "entry when sampled_blocking is a list (per-section pools would "
-                                  "otherwise collide on label) -- missing from entry with "
-                                  f"section={spec.get('section')}.")
+            own_prefix = spec.get('label_prefix') or f"section{spec.get('section', 5)}_sample"
+            if prefix_override:
+                label_prefix = f"{prefix_override}_{own_prefix}"
+            elif isinstance(sampled_cfg, list):
+                if not spec.get('label_prefix'):
+                    raise ValueError("build_ff_inputs.sampled_blocking: label_prefix is required on every "
+                                      "entry when sampled_blocking is a list (per-section pools would "
+                                      "otherwise collide on label) -- missing from entry with "
+                                      f"section={spec.get('section')}.")
+                label_prefix = own_prefix
+            else:
+                label_prefix = spec.get('label_prefix')
             section_scheme = ensemble_module.sample_parameter_subsets(
                 tagged_lines, valid_param_keys,
                 section=spec.get('section', 5),
@@ -936,12 +993,43 @@ def run_build_ff_inputs(config):
                 max_params=spec.get('max_params', 6),
                 stratify=spec.get('stratify', True),
                 rng_seed=spec.get('seed'),
-                label_prefix=spec.get('label_prefix'),
+                label_prefix=label_prefix,
             )
             overlap = set(section_scheme) & set(blocking_scheme)
             if overlap:
-                raise ValueError(f"build_ff_inputs.sampled_blocking: label collision across sections: {overlap}")
+                raise ValueError(f"build_ff_inputs.sampled_blocking: label collision: {overlap}")
             blocking_scheme.update(section_scheme)
+        return blocking_scheme
+
+    sources_cfg = cfg.get('parse2fit_sources')
+    if sources_cfg:
+        written_folders = []
+        for source in sources_cfg:
+            if not source.get('parse2fit_root') or not source.get('label_prefix'):
+                raise ValueError(f"build_ff_inputs.parse2fit_sources: every entry needs parse2fit_root "
+                                  f"and label_prefix -- got {source}")
+            if sampled_cfg:
+                blocking_scheme = build_blocking_scheme(prefix_override=source['label_prefix'])
+            else:
+                _require(cfg, 'build_ff_inputs', ['blocking_scheme'])
+                blocking_scheme = {f"{source['label_prefix']}_{k}": v for k, v in cfg['blocking_scheme'].items()}
+            written_folders.extend(ensemble_module.build_reaxff_ensemble_inputs(
+                parse2fit_root=source['parse2fit_root'],
+                catalog_params_path=cfg['catalog_params'],
+                blocking_scheme=blocking_scheme,
+                output_dir=reaxff_inputs_dir,
+                ffield_path=ffield_path,
+                unbounded_half_width=cfg.get('unbounded_half_width', 1e4),
+                seed_runs=source.get('seed_runs'),
+                margin_fraction=cfg.get('margin_fraction', 0.01),
+            ))
+        print(f"Wrote {len(written_folders)} reaxff_inputs folder(s) (across {len(sources_cfg)} "
+              f"parse2fit source(s)) under {reaxff_inputs_dir}")
+        return
+
+    parse2fit_root = cfg.get('parse2fit_root', os.path.join('FF', _gen_default(config, 'parse2fit')))
+    if sampled_cfg:
+        blocking_scheme = build_blocking_scheme()
     else:
         _require(cfg, 'build_ff_inputs', ['blocking_scheme'])
         blocking_scheme = cfg['blocking_scheme']
@@ -954,6 +1042,7 @@ def run_build_ff_inputs(config):
         ffield_path=ffield_path,
         unbounded_half_width=cfg.get('unbounded_half_width', 1e4),
         seed_runs=cfg.get('parse2fit_seed_runs'),
+        margin_fraction=cfg.get('margin_fraction', 0.01),
     )
     print(f"Wrote {len(written_folders)} reaxff_inputs folder(s) under {reaxff_inputs_dir}")
 
@@ -1189,6 +1278,79 @@ def run_prepare_reaxff_validation_structures(config):
                 raise FileNotFoundError(f"lammps_recipe_source_dir is missing {name}: {src}")
             shutil.copy2(src, recipe_dest_dir / name)
         print(f"Copied {len(recipe_files)} LAMMPS recipe file(s) from {recipe_source_dir} into {recipe_dest_dir}")
+
+
+# ---------------------------------------------------------------------------
+# Generation-seed diagnostics (energy/force deviations, ranked)
+# ---------------------------------------------------------------------------
+
+def write_generation_diagnostics(seed_label, validation_ff_dir, training_ff_dir, output_dir,
+                                  ev_to_kcal_mol=23.060548867):
+    """
+    Writes 4 ranked CSVs for ONE specific force field (seed_label) into
+    output_dir -- meant to be called once per generation's own starting
+    seed (1_10199, and each generation's own select_next_generation_
+    force_field winner), to track per-structure energy/force agreement
+    across generations at a finer grain than ranking.csv's own single
+    combined_score. Not yet wired into any stage automatically (see this
+    function's own caller, run_select_next_generation_force_field, for
+    where that would naturally go later) -- called directly, by hand, for
+    now.
+
+    Pure aggregation, no new computation: rank_reaxff_validation already
+    writes relative_energy_comparison.csv (entry_name/target/expression/
+    predicted_kcal_mol/dft_kcal_mol/abs_deviation_kcal_mol -- DFT and
+    ReaxFF relative energies already side by side, the SAME comparison
+    the combined_score objective function and any paper reporting should
+    use, not raw absolute energies -- those differ by an arbitrary,
+    physically meaningless zero-of-energy offset between ReaxFF's own
+    bond-energy reference and DFT's pseudopotential reference; confirmed
+    directly against real data, 2026-10: ~3650 kcal/mol/structure, ~10
+    kcal/mol/atom, for one checked structure) and force_deviations.csv
+    (structure/fx_dev_kcalmolA/fy_dev_kcalmolA/fz_dev_kcalmolA -- already
+    a DFT-vs-ReaxFF RMSE per structure) for every candidate it evaluates,
+    including seed_label itself whenever it was one of the candidates in
+    whichever generation's run selected it -- this just reads those two
+    files (for both validation_ff_dir and training_ff_dir, kept
+    deliberately separate per the user's own choice, not merged), adds a
+    mean_force_dev column (kcal/mol/A and meV/A, same mean-of-fx/fy/fz
+    convention rank_force_fields_combined's own mean_val_force/
+    mean_train_force already use) for ranking, sorts descending (largest
+    deviation first), and writes them out under output_dir -- 4 files:
+    energy_deviations_ranked_{validation,training}.csv,
+    force_deviations_per_structure_{validation,training}.csv.
+
+    validation_ff_dir/training_ff_dir: the *_ff_dir root seed_label's own
+    relative_energy_comparison.csv/force_deviations.csv already live
+    under (<ff_dir>/<seed_label>/...) -- e.g. whichever generation's
+    rank_reaxff_validation actually evaluated this seed as a candidate,
+    NOT necessarily the generation this seed itself now seeds (a given
+    seed is always evaluated one generation before it becomes a seed).
+    """
+    import pandas as pd
+
+    os.makedirs(output_dir, exist_ok=True)
+    written = []
+
+    for subset, ff_dir in (('validation', validation_ff_dir), ('training', training_ff_dir)):
+        e_path = os.path.join(ff_dir, seed_label, 'relative_energy_comparison.csv')
+        e_df = pd.read_csv(e_path).sort_values('abs_deviation_kcal_mol', ascending=False)
+        e_out = os.path.join(output_dir, f'energy_deviations_ranked_{subset}.csv')
+        e_df.to_csv(e_out, index=False)
+        written.append(e_out)
+
+        f_path = os.path.join(ff_dir, seed_label, 'force_deviations.csv')
+        f_df = pd.read_csv(f_path)
+        force_cols = ['fx_dev_kcalmolA', 'fy_dev_kcalmolA', 'fz_dev_kcalmolA']
+        f_df['mean_force_dev_kcalmolA'] = f_df[force_cols].mean(axis=1)
+        f_df['mean_force_dev_meVA'] = f_df['mean_force_dev_kcalmolA'] / ev_to_kcal_mol * 1000
+        f_df = f_df.sort_values('mean_force_dev_kcalmolA', ascending=False)
+        f_out = os.path.join(output_dir, f'force_deviations_per_structure_{subset}.csv')
+        f_df.to_csv(f_out, index=False)
+        written.append(f_out)
+
+    print(f"write_generation_diagnostics({seed_label}): wrote {len(written)} file(s) under {output_dir}")
+    return written
 
 
 # ---------------------------------------------------------------------------

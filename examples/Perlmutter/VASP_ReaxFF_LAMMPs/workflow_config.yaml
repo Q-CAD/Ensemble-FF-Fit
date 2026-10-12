@@ -195,6 +195,15 @@ build_ff_inputs:
   # Restrict to 2 of the 25 parse2fit seeds -- increase this yourself if
   # you want more ensemble diversity.
   parse2fit_seed_runs: [reaxff_run_0, reaxff_run_1]
+  # How far (as a fraction of the catalog's own [low, high] bound width) a
+  # parameter's bounds get widened when the seed force field's actual
+  # current value sits at or outside them -- see build_reaxff_ensemble_
+  # inputs.write_params_variant's own docstring. Optional -- defaults to
+  # 0.01 (1%) if omitted; 0.10 shown here since a narrow margin isn't
+  # needed to keep the search space small by hand once parameter-subset
+  # selection is automated (sampled_blocking/select_next_generation_
+  # force_field, both already in use below).
+  margin_fraction: 0.10
   # Bond/Off-diagonal/Angular, each independently sampled (own pool, own
   # label_prefix -- a single fit's unblocked parameters stay within ONE
   # section, not mixed, so performance differences stay attributable to a

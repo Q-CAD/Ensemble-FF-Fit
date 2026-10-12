@@ -334,7 +334,7 @@ def sample_parameter_subsets(tagged_lines, valid_param_keys, section=5, n_varian
 
 def write_params_variant(tagged_lines, active_sections, output_path,
                           ffield_values=None, unbounded_half_width=1e4,
-                          valid_param_keys=None):
+                          valid_param_keys=None, margin_fraction=0.01):
     """
     Write a `params` file to `output_path`: every tagged line written active
     (uncommented) if EITHER its own section is in `active_sections` (whole-
@@ -346,6 +346,17 @@ def write_params_variant(tagged_lines, active_sections, output_path,
     can mix both if ever needed, though a given call typically uses one or
     the other. Every other line (including section=None lines) written
     frozen (commented, `#`-prefixed).
+
+    margin_fraction (default 0.01, i.e. 1%): how far past the force-field's
+    own current value a widened bound is pushed, as a fraction of
+    max(abs(high - low), 1.0) -- see the "widened" bullet below. Was
+    hardcoded until 2026-10; made a real parameter once an equality-
+    boundary bug surfaced (a value sitting EXACTLY on its catalog bound,
+    not just outside it, needed the same widening and wasn't getting it --
+    fixed separately, see needs_rewrite's own <=/>= below) and the natural
+    next question was whether 1% itself was still the right amount now
+    that generation-to-generation selection is fully automated rather than
+    hand-reviewed each round.
 
     valid_param_keys, if given (see get_ffield_parameter_values), forces
     any line whose (section, index1, index2) isn't a real, optimizable
@@ -401,8 +412,21 @@ def write_params_variant(tagged_lines, active_sections, output_path,
             high = None if high_str.strip().lower() == 'n/a' else float(high_str)
             value = ffield_values.get((section_p, index1, index2)) if ffield_values else None
 
+            # <=/>= (not strict </>): a value sitting EXACTLY on a catalog
+            # bound is just as stuck as one outside it -- confirmed as a
+            # real, not theoretical, bug (2026-10): 9 real catalog
+            # parameters across Bond/Off-diagonal/Angular were found
+            # sitting exactly at their own catalog bound (6 of them
+            # already at the bound in the very first, unfit seed
+            # potential; the other 2 pushed there by an early fitting
+            # round and never widened since, because the old strict
+            # value<low/value>high check never fired for an exact match).
+            # Left as strict inequality, EVERY later generation's own
+            # bound-widening silently leaves that parameter stuck in the
+            # same direction forever, no matter how many generations
+            # later it gets activated again.
             needs_rewrite = (low is None) or (high is None) or (
-                value is not None and (value < low or value > high))
+                value is not None and (value <= low or value >= high))
             if needs_rewrite:
                 base = value if value is not None else 0.0
                 if low is None:
@@ -410,10 +434,10 @@ def write_params_variant(tagged_lines, active_sections, output_path,
                 if high is None:
                     high = base + unbounded_half_width
                 if value is not None:
-                    margin = 0.01 * max(abs(high - low), 1.0)
-                    if value < low:
+                    margin = margin_fraction * max(abs(high - low), 1.0)
+                    if value <= low:
                         low = value - margin
-                    if value > high:
+                    if value >= high:
                         high = value + margin
                 comment_suffix = f"  !{comment_field}" if comment_field is not None else ""
                 stripped = f"{section_p} {index1} {index2}  {sensitivity:g}  {low:.6g} {high:.6g}{comment_suffix}"
@@ -471,7 +495,8 @@ def write_metadata(combo_dir, parse2fit_run_dir, blocking_label, active_sections
 
 def build_reaxff_ensemble_inputs(parse2fit_root, catalog_params_path,
                                   blocking_scheme, output_dir, ffield_path=None,
-                                  unbounded_half_width=1e4, seed_runs=None):
+                                  unbounded_half_width=1e4, seed_runs=None,
+                                  margin_fraction=0.01):
     """
     Cross-products every parse2fit-generated geo/trainset.in variant under
     parse2fit_root (one per f"{output_format}_run_{i}" folder -- see
@@ -536,7 +561,7 @@ def build_reaxff_ensemble_inputs(parse2fit_root, catalog_params_path,
             active_descriptions, skipped_unsupported = write_params_variant(
                 tagged_lines, active_sections, os.path.join(combo_dir, 'params'),
                 ffield_values=ffield_values, unbounded_half_width=unbounded_half_width,
-                valid_param_keys=valid_param_keys,
+                valid_param_keys=valid_param_keys, margin_fraction=margin_fraction,
             )
             write_metadata(combo_dir, run_dir, label, active_sections, active_descriptions, skipped_unsupported)
             written.append(combo_dir)
