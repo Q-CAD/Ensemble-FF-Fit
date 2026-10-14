@@ -125,13 +125,25 @@ def sample_ensemble_configs(seeds, kappa_values, total_cap, sample_seed):
 
 
 def write_ace_input_yaml(path, elements, dataset_path, seed, kappa,
-                          potential_config=None, fit_config=None, backend_config=None):
+                          potential_config=None, fit_config=None, backend_config=None,
+                          test_filename=None):
     """
     Write one self-contained pacemaker input.yaml: DEFAULT_POTENTIAL_CONFIG/
     DEFAULT_FIT_CONFIG/DEFAULT_BACKEND_CONFIG above, each with the caller's
     own overrides layered on top (pass only the keys you want to add/change,
     matching write_mace_config's own convention), then this member's own
     `elements`/`seed`/`data.filename`/`fit.loss.kappa` written in last.
+
+    test_filename (ADDED 2026-10-08): if given, written as `data.test_filename`
+    -- pyace's own held-out-validation-set mechanism (CONFIRMED via
+    pyace.preparedata.ACEDataset/pyace.fitadapter's own source to be
+    backend-agnostic, working identically for the pyace and tensorpot
+    evaluators), computing genuine held-out RMSE/MAE each iteration into
+    this member's own test_metrics.txt -- the direct ACE analogue of MACE's
+    own in-training validation tracking. Meant to be the SAME shared path
+    for every ensemble member (see build_ace_ensemble_inputs' own
+    docstring) so every member is scored against the exact same held-out
+    set, for direct comparison.
     """
     potential = dict(DEFAULT_POTENTIAL_CONFIG)
     if potential_config:
@@ -150,10 +162,14 @@ def write_ace_input_yaml(path, elements, dataset_path, seed, kappa,
     if backend_config:
         backend.update(backend_config)
 
+    data = {"filename": str(dataset_path)}
+    if test_filename is not None:
+        data["test_filename"] = str(test_filename)
+
     full_config = {
         "seed": seed,
         "potential": potential,
-        "data": {"filename": str(dataset_path)},
+        "data": data,
         "fit": fit,
         "backend": backend,
     }
@@ -167,20 +183,50 @@ def build_ace_ensemble_inputs(dataset_path, output_dir, elements,
                                seeds=(0, 1, 2), kappa_grid_kwargs=None,
                                total_cap=10, sample_seed=0,
                                potential_config=None, fit_config=None, backend_config=None,
-                               input_filename="input.yaml"):
+                               input_filename="input.yaml",
+                               full_dataframe=None, train_fraction=None,
+                               dataset_filename="dataset.pckl.gzip",
+                               test_filename=None):
     """
     Materialize the randomly-sampled ensemble: numbered folders 0..N-1 under
     `output_dir`, each with input.yaml (this member's own sampled
-    (seed, kappa) pair, referencing the SHARED dataset_path -- not copied
-    per folder, matching how MACE's foundation_model is a single shared
-    check_files-anchored file rather than duplicated into every mace_inputs
-    folder) and METADATA (which seed/kappa this folder used).
+    (seed, kappa) pair) and METADATA (which seed/kappa/dataset this folder
+    used).
 
-    dataset_path is NOT validated to exist here (mirrors
-    build_mace_ensemble_inputs' own division of labor -- dataset-building
-    is a separate step, see build_ace_dataset.write_ace_dataset) -- a
-    missing dataset only fails once pacemaker/GeneralACEFit actually tries
-    to read it, at fit time.
+    Two modes for what each member's input.yaml points at, chosen by
+    whether full_dataframe/train_fraction are given:
+
+    - Default (full_dataframe=None): every member references the SAME
+      shared dataset_path -- not copied per folder, matching how MACE's
+      foundation_model is a single shared check_files-anchored file rather
+      than duplicated into every mace_inputs folder. dataset_path is NOT
+      validated to exist here (mirrors build_mace_ensemble_inputs' own
+      division of labor -- dataset-building is a separate step, see
+      build_ace_dataset.write_ace_dataset) -- a missing dataset only fails
+      once pacemaker/GeneralACEFit actually tries to read it, at fit time.
+
+    - ADDED: per-member data subsets (full_dataframe given, a pandas
+      DataFrame in build_ace_dataset.build_ace_dataframe's own schema, plus
+      train_fraction, e.g. 0.85): each member instead gets its OWN
+      independently-sampled train_fraction subset of full_dataframe's rows
+      (df.sample(frac=train_fraction, random_state=seed) -- reuses this
+      member's own seed for the subset draw too, so the whole member is
+      reproducible from one seed, not two), saved to its own folder as
+      dataset_filename, with input.yaml's data.filename pointing at THAT
+      file instead of the shared dataset_path. This is for bagging-style
+      ensemble diversity (how much does which 85% of the training set you
+      fit on change validation performance), additive to the existing
+      seed/kappa variation, not a replacement for it -- dataset_path itself
+      is still accepted in this mode (recorded for reference) but no
+      longer written into any member's input.yaml.
+
+    test_filename (ADDED 2026-10-08): if given, the SAME shared path is
+    written into every member's own input.yaml as data.test_filename (see
+    write_ace_input_yaml's own docstring) -- deliberately one shared path,
+    not per-member, so every ensemble member is scored against the exact
+    same held-out validation set for direct comparison, independent of
+    which mode (shared dataset_path vs. per-member train_fraction subsets)
+    is used for the TRAINING side above.
 
     Returns the list of folder paths written.
     """
@@ -191,20 +237,35 @@ def build_ace_ensemble_inputs(dataset_path, output_dir, elements,
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    use_subsets = full_dataframe is not None and train_fraction is not None
+
     written = []
     for i, (seed, kappa) in enumerate(sampled):
         folder = output_dir / str(i)
         folder.mkdir(parents=True, exist_ok=True)
 
+        member_dataset_path = dataset_path
+        subset_df = None
+        if use_subsets:
+            subset_df = full_dataframe.sample(frac=train_fraction, random_state=seed)
+            member_dataset_path = (folder / dataset_filename).resolve()
+            subset_df.to_pickle(member_dataset_path, compression='gzip', protocol=4)
+
         write_ace_input_yaml(
-            folder / input_filename, elements, dataset_path, seed, kappa,
+            folder / input_filename, elements, member_dataset_path, seed, kappa,
             potential_config=potential_config, fit_config=fit_config, backend_config=backend_config,
+            test_filename=test_filename,
         )
 
         with open(folder / "METADATA", "w") as f:
-            f.write(f"dataset: {dataset_path}\n")
+            f.write(f"dataset: {member_dataset_path}\n")
             f.write(f"seed: {seed}\n")
             f.write(f"kappa (energy-vs-force loss weight): {kappa}\n")
+            if use_subsets:
+                f.write(f"train_fraction: {train_fraction} "
+                        f"({len(subset_df)} of {len(full_dataframe)} row(s) from {dataset_path})\n")
+            if test_filename is not None:
+                f.write(f"test_filename (shared held-out validation set): {test_filename}\n")
 
         written.append(str(folder))
 
