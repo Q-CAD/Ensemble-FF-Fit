@@ -3,6 +3,11 @@ from tqdm import tqdm
 import numpy as np
 import os
 
+from pymatgen.core.operations import SymmOp
+from pymatgen.core.structure import Structure
+
+from EnsembleFFFit.molecular_dynamics.lammps.poscar_to_structure_lmp import lammps_frame_rotation_matrix
+
 
 def convert_units(run_image_dct, energy_to_ev_factor):
     """
@@ -54,6 +59,63 @@ def convert_units_to_kcal_mol(run_image_dct, ev_to_kcal_mol_factor):
             converted['fx'] = [v * ev_to_kcal_mol_factor for v in props['fx']]
             converted['fy'] = [v * ev_to_kcal_mol_factor for v in props['fy']]
             converted['fz'] = [v * ev_to_kcal_mol_factor for v in props['fz']]
+            out[run][image] = converted
+    return out
+
+
+def rotate_reference_forces_to_lammps_frame(run_image_dct, reference_root):
+    """
+    Returns a NEW {run: {image: props}} dict with "fx"/"fy"/"fz" rotated
+    into LAMMPS's own canonical box frame -- see poscar_to_structure_lmp.
+    lammps_frame_rotation_matrix and bug_report.md for the full story:
+    pymatgen's LammpsData.from_structure (used anywhere a reaxff_
+    validation POSCAR gets converted to a LAMMPS data file) silently
+    rotates every atomic position -- and therefore every force LAMMPS
+    subsequently computes -- into a canonical box orientation whenever a
+    structure's own lattice isn't already in that orientation. DFT's own
+    reference forces (read straight from vasprun.xml/properties.json) are
+    in VASP's native, unrotated frame, so any comparison that treats
+    fx/fy/fz as independent per-axis quantities -- exactly what
+    get_ff_deviations/rank_force_fields_combined below do -- silently
+    mixes two different coordinate frames unless the reference side is
+    rotated to match first. Energy and force MAGNITUDE are rotation-
+    invariant and need no correction; this only matters because those
+    functions compare components independently.
+
+    Call this on the DFT reference dict BEFORE any force comparison (and
+    before/after convert_units_to_kcal_mol -- order doesn't matter, since
+    rotation and the scalar unit conversion commute), right after
+    parse_reference_tree/parse_labeled_tree produced it. reference_root:
+    the same root run_image_dct was parsed from -- every run/image key is
+    itself the POSCAR's own subpath under that root (reference_root/
+    <run>/<image>/POSCAR always exists wherever that image's
+    properties.json does), so no separate structure lookup is needed.
+    Rotations are cached per (run, image) within one call, since loading
+    a POSCAR + computing lattice_2_lmpbox is the expensive part and a
+    structure's own lattice doesn't vary across what it's being compared
+    against. Does not mutate the input.
+    """
+    rotation_cache = {}
+
+    def _rotation_for(run, image):
+        key = (run, image)
+        if key not in rotation_cache:
+            poscar_path = os.path.join(reference_root, run, image, 'POSCAR')
+            structure = Structure.from_file(poscar_path)
+            rotation_cache[key] = lammps_frame_rotation_matrix(structure)
+        return rotation_cache[key]
+
+    out = {}
+    for run, images in run_image_dct.items():
+        out[run] = {}
+        for image, props in images.items():
+            op = SymmOp.from_rotation_and_translation(_rotation_for(run, image))
+            vecs = np.column_stack([props['fx'], props['fy'], props['fz']])
+            rotated = op.operate_multi(vecs)
+            converted = dict(props)
+            converted['fx'] = rotated[:, 0].tolist()
+            converted['fy'] = rotated[:, 1].tolist()
+            converted['fz'] = rotated[:, 2].tolist()
             out[run][image] = converted
     return out
 

@@ -350,6 +350,56 @@ you'd reconsider the fitting setup itself — e.g. which parameter sections to s
 how many at once, or which weighting scheme — rather than mechanically repeating
 generation 0's own choices.
 
+### Comparing the best-performing force field across generations
+
+`rank_reaxff_validation`'s own output (`energy_deviations_ranked_{training,
+validation}.csv`, `force_deviations_per_structure_{training,validation}.csv` under
+`FF/generation_<N>/<selected_label>/`, written by `write_generation_diagnostics`) is
+scoped to a single generation's own winner. To track how a fitted force field's
+agreement with DFT actually changes ACROSS generations — e.g. for a convex-hull plot
+of predicted vs. DFT energies, or scatter plots of predicted vs. DFT force
+components — two standalone scripts in this directory compile that comparison across
+every generation found on disk in one pass:
+
+```bash
+python compile_generation_energies_per_atom.py
+python compile_generation_forces_per_site.py
+```
+
+Both auto-discover which generations exist and which force field each one's own
+`select_next_generation_force_field` run selected — nothing to edit by hand as you add
+more generations. Run them from this directory (inside the `matensemble:ff-fit`
+container, same as any other stage), after at least `rank_reaxff_validation` has run
+for generation 0:
+
+- `compile_generation_energies_per_atom.py` writes `compiled_generation_energies_
+  per_atom_{training,validation}.csv` — the relative-energy comparison, converted
+  from ReaxFF's native per-"formula-unit"/per-stoichiometric-divisor convention
+  (parse2fit's own `get_divisors` logic — there is no single, dataset-wide atom count
+  to normalize by; see the script's own docstring) to a genuine per-atom energy
+  (kcal/mol/atom and eV/atom), the right quantity for convex-hull-style plotting.
+- `compile_generation_forces_per_site.py` writes `compiled_generation_forces_per_
+  site_{training,validation}.csv` — one row per (generation, structure, atom,
+  cartesian component), ready for per-component (fx/fy/fz) or pooled/"net" scatter
+  plots of predicted vs. DFT forces.
+
+Both scripts, and `rank_reaxff_validation` itself, correct for a LAMMPS-specific
+coordinate-frame issue: pymatgen's `LammpsData.from_structure` (used to write every
+`structure.lmp`) silently rotates a structure's atomic positions — and therefore
+every force LAMMPS subsequently computes — into LAMMPS's own canonical box
+orientation whenever a structure's own lattice isn't already in that orientation.
+Energies and force *magnitudes* are rotation-invariant and unaffected, but a
+per-component (fx/fy/fz) comparison against DFT's forces (parsed straight from
+`vasprun.xml`, in VASP's native, unrotated frame) would silently mix two different
+coordinate frames for any such structure. `EnsembleFFFit.analysis.best_force_field.
+rotate_reference_forces_to_lammps_frame` fixes this once, right where DFT reference
+forces are first parsed (both inside `run_pipeline.py`'s own `run_rank_reaxff_
+validation` and inside `compile_generation_forces_per_site.py`), by rotating them
+into the same frame LAMMPS used — see that function's docstring for the mechanism.
+If you're touching force-validation code elsewhere in this pipeline, make sure any
+new per-component force comparison goes through that same function rather than
+comparing raw parsed forces directly.
+
 ## 6. Known limitations
 
 - **parse2fit is install-only scope, not debugged as part of this pipeline.** It

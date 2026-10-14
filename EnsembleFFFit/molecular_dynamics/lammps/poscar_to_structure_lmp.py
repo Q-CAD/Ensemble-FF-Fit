@@ -36,7 +36,35 @@ something else is wrong.
 """
 from pymatgen.core.periodic_table import Element
 from pymatgen.core.structure import Structure
-from pymatgen.io.lammps.data import LammpsData
+from pymatgen.io.lammps.data import LammpsData, lattice_2_lmpbox
+
+
+def lammps_frame_rotation_matrix(structure):
+    """
+    Returns the rotation matrix LammpsData.from_structure (see
+    structure_to_lmp below) silently applies to `structure`'s own atomic
+    positions when writing it out as a LAMMPS data file -- identity if
+    `structure`'s lattice is already LAMMPS-canonical (lattice vector a
+    along x, b in the xy-plane), a real rotation otherwise. Atom-to-atom
+    correspondence is preserved either way (LAMMPS atom IDs are assigned
+    in original site order), but every position -- and therefore every
+    force LAMMPS subsequently computes on this structure -- ends up
+    expressed in this rotated frame, not the structure's original one
+    (see bug_report.md for the full story and how this was discovered).
+
+    Exposed here, rather than only implicitly inside LammpsData.
+    from_structure, so callers that need to express some OTHER
+    already-computed per-atom vector quantity (e.g. a DFT reference
+    force, read from vasprun.xml/properties.json in VASP's own native,
+    unrotated frame) in this SAME frame -- without writing a full
+    structure.lmp just to get at it -- can reuse the exact computation
+    LAMMPS itself will see, rather than risk a subtly different one. See
+    EnsembleFFFit.analysis.best_force_field.
+    rotate_reference_forces_to_lammps_frame, the actual caller of this
+    for force validation.
+    """
+    _, symm_op = lattice_2_lmpbox(structure.lattice)
+    return symm_op.rotation_matrix
 
 
 def structure_to_lmp(structure, output_path, atom_style='charge'):

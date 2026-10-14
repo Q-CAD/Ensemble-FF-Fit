@@ -1959,7 +1959,8 @@ def run_rank_reaxff_validation(config):
     behaves exactly as before (no new columns, no error).
     """
     from EnsembleFFFit.analysis.best_force_field import (
-        convert_units_to_kcal_mol, rank_force_fields_combined, write_per_structure_force_deviations)
+        convert_units_to_kcal_mol, rank_force_fields_combined, write_per_structure_force_deviations,
+        rotate_reference_forces_to_lammps_frame)
     from EnsembleFFFit.analysis.dict_parsers import PropertiesOnlyParser
     from EnsembleFFFit.utilities.general import import_module_from_path
 
@@ -2001,14 +2002,32 @@ def run_rank_reaxff_validation(config):
     validation_ff_dct = {label: _drop_first_run_segment(run_dct) for label, run_dct in
                          parse_labeled_tree(cfg['validation_ff_dir'], parser_cls=PropertiesOnlyParser,
                                              num_processes=parse_num_processes).items()}
+    # rotate_reference_forces_to_lammps_frame: see bug_report.md and that
+    # function's own docstring -- LAMMPS silently rotates atomic
+    # positions (and therefore forces) into its own canonical box frame
+    # whenever a structure's lattice isn't already in that orientation,
+    # so DFT's own native-frame reference forces must be rotated to
+    # match before any per-component (fx/fy/fz) comparison is meaningful.
+    # Applied once, right after parsing, before unit conversion (order
+    # doesn't matter -- rotation and the scalar kcal/mol conversion
+    # commute) -- so every downstream consumer of *_reference_dct
+    # (write_per_structure_force_deviations, rank_force_fields_combined,
+    # combined_score/selection) gets correctly-aligned forces, not just
+    # this function's own direct callers.
     validation_reference_dct = {"DFT": convert_units_to_kcal_mol(
-        parse_reference_tree(cfg['validation_reference_root'], parser_cls=PropertiesOnlyParser), ev_to_kcal_mol)}
+        rotate_reference_forces_to_lammps_frame(
+            parse_reference_tree(cfg['validation_reference_root'], parser_cls=PropertiesOnlyParser),
+            cfg['validation_reference_root']),
+        ev_to_kcal_mol)}
 
     training_ff_dct = {label: _drop_first_run_segment(run_dct) for label, run_dct in
                        parse_labeled_tree(cfg['training_ff_dir'], parser_cls=PropertiesOnlyParser,
                                            num_processes=parse_num_processes).items()}
     training_reference_dct = {"DFT": convert_units_to_kcal_mol(
-        parse_reference_tree(cfg['training_reference_root'], parser_cls=PropertiesOnlyParser), ev_to_kcal_mol)}
+        rotate_reference_forces_to_lammps_frame(
+            parse_reference_tree(cfg['training_reference_root'], parser_cls=PropertiesOnlyParser),
+            cfg['training_reference_root']),
+        ev_to_kcal_mol)}
 
     # Per-structure force deviations, written straight into each force
     # field's own run directory -- forces only, no energy column (see
