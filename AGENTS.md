@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents working with code in this repository.
 
 ## What this is
 
@@ -27,6 +27,14 @@ pre-installed copy, not fetched from git). `vaspflux` (DFT job orchestration), `
 DFT/MD output into FF training-set formats), and `HeteroBuilder` (importable as `vdW_structures`;
 heterostructure generation) are currently commented out in `pyproject.toml` — deferred, not core
 dependencies of the RMG/MACE/ASE pipeline this repo currently exercises.
+
+Most real deployments don't live in this repo at all — they're a separate project directory (its own
+`run_pipeline.py`/`workflow_config.yaml`/driver-script copies) that imports `EnsembleFFFit` as a normal
+dependency (pip install or `PYTHONPATH`), mirroring the `examples/` convention below without being a
+fourth folder under it. If you're building one of those, or extending one of the in-repo examples, start
+at **`examples/README.md`** — it covers how to plan a new pipeline, which existing pieces to reuse before
+writing new ones, and a known-pitfalls note worth checking before debugging something that's already been
+hit once.
 
 ## Install / environment setup
 
@@ -71,9 +79,8 @@ worth knowing if you're touching this area:
 
 This supersedes a set of per-backend `build_*.sh` conda-env scripts that used to live at the repo root
 (each created its own conda env, cloned sibling repos, and `pip install -e . --no-deps`'d everything). They
-were retired once this extras-based approach existed; see git history (or the `main` branch, pre-merge) if
-you need to recover exactly what they did for a specific backend/HPC quirk that isn't captured here or in
-`TODO.md`.
+were retired once this extras-based approach existed; see git history if you need to recover exactly what
+they did for a specific backend/HPC quirk that isn't captured here or in `TODO.md`.
 
 ## No test suite
 
@@ -242,7 +249,7 @@ generic by-path loader, not a `pyMD` import).
   deleted outright, along with every other console script that had no callers anywhere in this repo and no
   `pyproject.toml` registration left (see `TODO.md` for the full list and reasoning) — confirmed via a
   repo-wide import search before deleting anything, same as the `pyMD/` reorganization above. Still
-  recoverable from the `main`/`Claude` branches if any of it turns out to be needed as reference later.
+  recoverable from git history if any of it turns out to be needed as reference later.
 - `lammps/lammps_properties.py` (moved here from `analysis/`, since it's LAMMPS-specific) parses LAMMPS
   dump/log output into structures/single-point data (`get_atoms`, `parse_single_points`, `write_poscars`)
   and, merged in from the now-deleted `copy_by_pattern_cli.py` (its only real consumer),
@@ -271,7 +278,7 @@ from the Materials Project API by mpid/chemsys), `substitutions/` (ionic-radius-
 substitution + volume prediction), `vdW_layers/` (interlayer-spacing sampling for vdW heterostructures,
 depends on the external `HeteroBuilder`/`vdW_structures` package). `deviation_selection/` (a UQ-driven
 structure-downselection tool) has been deleted — unreferenced anywhere, its role in the current pipeline is
-filled by `analysis/variance.py`/`select_dft_candidates` instead; recoverable from `main`/`Claude` if
+filled by `analysis/variance.py`/`select_dft_candidates` instead; recoverable from git history if
 needed.
 
 ### `analysis/` — ensemble scoring / best-FF selection
@@ -291,14 +298,16 @@ each ensemble member's RMSE against DFT ground truth, driving which force field 
 `parse_vasp_aimd_cli.py` have all been deleted — none were used anywhere in the current pipeline
 (`copy_by_pattern_cli.py`'s one genuinely useful piece, `get_atom_mapping_from_control`, was merged into
 `molecular_dynamics/lammps/lammps_properties.py` first, see above, rather than lost). All recoverable from
-`main`/`Claude` if needed as reference for a future backend.
+git history if needed as reference for a future backend.
 
 ### `examples/`
 
 Three full worked walkthroughs, each a trimmed copy of a real, working run (structures + driver/recipe
 scripts only, no run output — see each one's own `README.md` for exactly what's excluded and why),
 together the closest thing this repo has to an integration test and to end-user-facing usage
-documentation. Read the relevant one before changing pipeline-stage interfaces.
+documentation. Read the relevant one before changing pipeline-stage interfaces. **`examples/README.md`**
+is the practical starting point if you're building a new pipeline or deployment (in this repo or your
+own project directory) — read it before writing any new orchestration/driver code.
 
 - **`examples/Frontier/RMG_MACE_ASE/`** (OLCF Frontier, ROCm) — RMG DFT convergence → MACE ensemble
   fitting/validation → ASE finite-temperature MD sampling → UQ-based downselection of next-round DFT
