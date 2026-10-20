@@ -99,10 +99,10 @@ This layout is the result of a mid-2026 reorganization (structure-by-purpose rat
 structure-by-legacy-name); see `TODO.md` for what's still deferred from that pass, and git history for the
 detailed rationale behind specific renames/decisions if it's ever needed.
 
-### `base.py` / `in_queue.py` — job orchestration core
+### `base.py` — job orchestration core
 
 This is the piece that actually drives async, adaptive ensemble fitting; everything else feeds it inputs
-or consumes its outputs. Both live at the top of the `EnsembleFFFit` package (not inside a subpackage) —
+or consumes its outputs. It lives at the top of the `EnsembleFFFit` package (not inside a subpackage) —
 `potential/`, `molecular_dynamics/`, and the MLIP-backend CLIs below all import directly from
 `EnsembleFFFit.base`.
 
@@ -144,10 +144,12 @@ or consumes its outputs. Both live at the top of the `EnsembleFFFit` package (no
     and Quantum Espresso (`examples/HPC_aas/QE_ACE/`, via ASE's own `EspressoTemplate`/`EspressoProfile` —
     evaluated and rejected `pymatgen-io-espresso` first, since it was pre-alpha with no documented
     pseudopotential-resolution support at the time).
-- **`in_queue.py`** is a separate SLURM-level helper (`sbatch` submission, `squeue` polling, sentinel-file
-  based done/fail detection, auto-resubmission) operating one level above MatEnsemble's in-job Flux task
-  distribution. It has no callers anywhere in this repo (its only caller was an example notebook that has
-  since been removed) — a deletion candidate, not yet acted on.
+
+`in_queue.py` (a separate SLURM-level helper — `sbatch` submission, `squeue` polling, sentinel-file based
+done/fail detection, auto-resubmission — operating one level above MatEnsemble's in-job Flux task
+distribution) has been deleted: it had no callers anywhere in this repo (its only caller was an example
+notebook that was removed earlier), confirmed via a repo-wide search before deleting it. Recoverable from
+git history if ever needed.
 
 **Why the three subclasses' input-passing conventions deliberately differ, not just historically drifted
 apart** — each one's rigidity (or lack of it) tracks how much variation is actually expected across real
