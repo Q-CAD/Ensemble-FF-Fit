@@ -115,7 +115,7 @@ def rmg_container_env(cores_per_task, rmg_num_threads):
     confirmed GOMP affinity bug under Apptainer -- OMP_PLACES must stay
     genuinely unset (not an empty string, which crashes libgomp).
 
-    Multi-node (INVESTIGATION_NOTES.md, Phase 2): MPICH_OFI_NIC_POLICY must
+    Multi-node (README.md section 9): MPICH_OFI_NIC_POLICY must
     not be NUMA -- Flux tasks aren't confined to one NUMA domain the way
     srun-bound ones are, and Cray MPICH then aborts MPI_Init on >1 node.
     FI_HMEM=system stops libfabric initialising its ROCr GPU-memory support
@@ -298,7 +298,7 @@ def run_converge_dft_data(config):
         # and puts its own libpmi first on the task's library path, so the
         # num_tasks rmg-gpu processes (one per chore copy) join one MPI job --
         # confirmed on 1 and 2 nodes (one banner, "16 MPI processes/image";
-        # INVESTIGATION_NOTES.md). The "several banners" seen long ago with
+        # README.md section 9). The "several banners" seen long ago with
         # mpi=False predate the current setup.
         resources = Resources(num_tasks=num_tasks, cores_per_task=cores_per_task, gpus_per_task=1,
                                env=env, inherit_env=True, mpi=False)

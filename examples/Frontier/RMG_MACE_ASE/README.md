@@ -35,7 +35,6 @@ stage below, not resuming from pre-computed results.
 | `launch_flux.slurm` | Start Flux inside the image across the allocation and run the pipeline (step 4) |
 | `run_pipeline.py`, `workflow_config.yaml` | The pipeline and its config (steps 5-7) |
 | `workflow_config.smoke.yaml`, `make_smoke_copy.sh` | 1-node smoke test (step 6) |
-| `INVESTIGATION_NOTES.md` | Running log of what was tried on this example and what it ruled out |
 
 ## 1. Get the container image
 
@@ -327,7 +326,7 @@ editing.
 - **RMG's `kohn_sham_solver` is `"davidson"`, not `"multigrid"`, for now.** `multigrid`
   failed here with the same HSA error (and `hipErrorInvalidDeviceFunction`) and was
   blamed on multigrid itself, but given the item above it may have been the same
-  out-of-memory; being re-tested (`INVESTIGATION_NOTES.md`).
+  out-of-memory; being re-tested (section 9).
 - **The isolated Bi atom doesn't converge with `davidson`** (the total energy
   oscillates by ~3 Ha and never settles); it was converged with `multigrid` outside the
   container. Until that's sorted out, provide a converged Bi run (`make_smoke_copy.sh`'s
@@ -337,19 +336,15 @@ editing.
   controlled A/B, to be an actual regression here.
 - **RMG's `command` is a bare `{rmg_executable} {rmg_name}`** — no `srun`/`mpirun`/
   `flux run` wrapper. Flux owns launch semantics for every chore.
-- **Multi-node RMG in the container needs three settings** (all in place;
-  `INVESTIGATION_NOTES.md` Phase 2 has the evidence):
-  - `MPICH_OFI_NIC_POLICY=BLOCK`, not `NUMA` — under Flux the ranks aren't confined
-    to one NUMA domain, and Cray MPICH aborts `MPI_Init` on >1 node (`Unable to use
-    a NIC_POLICY of 'NUMA'. Rank N is not confined to a single NUMA node`).
-  - `FI_HMEM=system` — otherwise libfabric initialises ROCm GPU-memory support during
-    an inter-node `MPI_Init`, after which HIP finds **no GPUs** (`hsa_init:
-    HSA_STATUS_ERROR_OUT_OF_RESOURCES`) and `rmg-gpu` hangs at startup with an empty
-    log. RMG uses host-buffer MPI, so nothing is lost. (Alternative:
-    `mpi_tests/libhip_preinit.so` via `LD_PRELOAD`, which initialises HIP first.)
-  - Speed: brokers with `--cpu-bind=none`, `cores_per_task: 7`, closest GCD per rank.
-  `Resources(mpi=False)` is correct: Flux wires every task to its PMI and puts its own
-  `libpmi` first, so the ranks join one job (one banner, `16 MPI processes/image`).
+- **Multi-node RMG needs `MPICH_OFI_NIC_POLICY=BLOCK`, `FI_HMEM=system`, and the
+  CPU/GPU layout above** — all already set; don't change them without reading
+  section 9. Symptoms if they're lost: `MPI_Init` aborts on >1 node (NUMA policy), or
+  `rmg-gpu` hangs at startup with an empty log because HIP sees no GPUs (FI_HMEM), or
+  runs ~25-100% slower (layout). `Resources(mpi=False)` is correct.
+- **MACE members with fewer training configs than `batch_size`** (common with small
+  label combinations) used to die with `torch.cat(): expected a non-empty list of
+  Tensors`; `FF/mace_fit.py` now shrinks `batch_size`/`valid_batch_size` to fit and
+  says so in the chore's stderr.
 - **`max_tasks_per_job` clamping uses ceiling, not floor, division** when computing a
   fallback node count — floor division can produce `Resources(num_tasks=0, ...)`.
 - **A stray second `model.model` under `fine_tuning.run_directory` causes unwanted
@@ -360,3 +355,54 @@ editing.
   different tree shape needs a different value, or models get merged into one chore.
 - **Image pulls through the OLCF proxy occasionally fail** with
   `stream error ... PROTOCOL_ERROR`; `build_image.slurm` retries.
+
+## 9. Multi-node RMG: what it takes, and how it was established
+
+October 2026, on this branch. Kept here so the reasoning survives; the scripts used are
+in git history (`mpi_tests/`, `INVESTIGATION_NOTES.md`).
+
+**How a multi-rank RMG chore runs.** With `Resources(num_tasks=N, ...)`, Flux starts
+N copies of the chore's Python function, one per rank; each copy of `DFT/rmg_dft.py`
+writes the same inputs and launches its own `rmg-gpu`, and Flux's PMI joins those N
+processes into one MPI job. So the driver's stdout appears N times per chore (in
+`matensemble_workflow-*/out/chore-run_rmg-*/stdout`), but RMG prints one banner and
+`N MPI processes/image`. Flux puts its own `libpmi` first on each task's library path,
+so Cray MPICH needs no PMI changes (unlike VASP on Perlmutter) and `mpi=False` is fine.
+
+**What was needed, bottom-up** (each found with a minimal MPI test built against
+`rmg-gpu`'s own Cray MPICH, then confirmed with RMG):
+
+| Symptom (2 nodes, inside the container) | Cause | Fix (where) |
+|---|---|---|
+| `MPI_Init` aborts on every rank: `Unable to use a NIC_POLICY of 'NUMA'. Rank N is not confined to a single NUMA node` (1 node always worked) | Flux tasks aren't bound to one NUMA domain | `MPICH_OFI_NIC_POLICY=BLOCK` (`run_pipeline.py`, `rmg_container_env`) |
+| Ranks join, but HIP sees **0 GPUs** after `MPI_Init`; `rmg-gpu` hangs with an empty log; with GPU-aware MPI, `hsa_init ... HSA_STATUS_ERROR_OUT_OF_RESOURCES` | libfabric initialises its ROCm memory support during an inter-node `MPI_Init` (querying GPUs *before* `MPI_Init`, or `FI_HMEM=system`, both fix it) | `FI_HMEM=system` (same place); RMG uses host-buffer MPI |
+| Works, but 1.6-2x slower per SCF step than native `srun` | the Flux instance lacked cores 1-9 of each node, 6-core slices straddled L3/NUMA groups, GPUs handed out in index order (most ranks on a far GCD) | brokers with `srun --cpu-bind=none` (`launch_flux.slurm`); `cores_per_task: 7` + `controller_cores: 0` (config); closest GCD per rank (`rmg_dft.py`, `RMG_GPU_CLOSEST_GCDS`) |
+
+**Measured** (99-atom Bi54Se45 single point, davidson, 16 ranks on 2 nodes, same nodes):
+native `srun` 86 s first step / 34.9 s per step after; container through Flux, with the
+fixes, 87 s / 35.0 s; without the layout fixes 101-136 s / 42-61 s. A 25-atom Bi9Se16
+single point, fully converged through `converge_dft_data`:
+
+| | 1 node (8 ranks) | 2 nodes (16 ranks) |
+|---|---|---|
+| SCF steps | 26 | 29 |
+| RMG total | 269 s | 173 s |
+| per step | 10.4 s | 6.0 s |
+| energy | -23172.17999939 eV | -23172.17999858 eV |
+
+(energies within 1e-6 eV, forces within 2e-3 eV/A, stress within 5e-6).
+
+**Ruled out along the way:** locked-memory limits (unlimited in Flux tasks),
+`HSA_XNACK` (the image sets 1; 0 or unset changes nothing), each rank seeing all 8
+GPUs (restricting it changes neither correctness nor speed), Slurm/PALS variables
+leaking into the container (none reach Flux tasks), the container's ROCm version for the
+HSA crash (that crash is RMG running out of GPU memory — it happens natively too).
+
+**Still open:** why libfabric's ROCm initialisation only breaks HIP inside the
+container (host vs container ROCm runtime is the obvious difference); pyRMG's node
+estimate is far above what fits (14 nodes for the 99-atom cell, which runs on 2);
+each rank logs `HSA exception: hsaKmtSVMSetAttr failed.` 4 times in the container
+(harmless to speed or results); multigrid in the container (MULTIGRID_PLACEHOLDER).
+Also unchecked: that `rmg_dft.py`'s `stress_voigt` (taken from the ASE calculator, so
+ASE's sign convention) matches the training data's once loop-2 candidates converge.
+
