@@ -125,14 +125,69 @@ cmake .. -DRMG_HIP_ENABLED=1 -DHIP_PATH="/opt/rocm-6.3.1/"
 make rmg-gpu -j 20 -k
 ```
 
-Built against `rocm/6.3.1` while the container ships `rocm-6.3.3` — same minor
-series, HIP/HSA ABI and GPU kernel code-object format stay compatible, confirmed
-working in practice. (Newer ROCm modules exist on Frontier now; staying in the 6.3
-series keeps the binary matched to the image's ROCm and torch.)
-
 Update `DFT/vdW_quench.yml`'s `rmg_executable`/`vdwdf_kernel_filepath` (both
 `/path/to/...` placeholders) to point at your build and its bundled
 `XC/vdW_kernel_table` (`make_smoke_copy.sh` does this for its scratch copy).
+
+### 3b. Matching the container to your `rmg-gpu` build
+
+**Rule: `rmg-gpu` must run against the same ROCm (and Cray PE) libraries it was built
+with, not the image's.** The image ships its own ROCm (6.3.3) for torch/MACE; a binary
+built against a different ROCm partly works against it, which is what makes this easy to
+miss. Measured with the build above (`rocm/6.3.1`) on the isolated Bi atom, inside the
+container:
+
+| `rmg-gpu` run against | `davidson` | `multigrid` |
+|---|---|---|
+| image ROCm 6.3.3 | runs (Bi-Se cells converge) | dies at once: `rocBLAS error ... hipErrorInvalidDeviceFunction` in `hipblasDsyrkx` |
+| host ROCm 6.3.1 (its build ROCm) | runs | converges (11 SCF steps, same energy as outside the container) |
+
+`HSA_XNACK` makes no difference. Each solver calls different GPU library routines, so
+"one mode works" says nothing about the other.
+
+**Where it's set: one place.** `launch_flux.slurm`'s `RMG_ROCM` (default
+`/opt/rocm-6.3.1`) is bind-mounted into the container and used — via the environment —
+for the ROCm entry of `run_pipeline.py`'s `RMG_LD_LIBRARY_PATH`, which only the
+`rmg-gpu` processes see. After building against another ROCm module, run with
+`RMG_ROCM=/opt/rocm-<version>`. Cray PE libraries come from the `/opt/cray` bind (the
+host's own); if your build uses other module libraries (e.g. a different boost from
+`/sw/frontier`), add their directories to `RMG_LD_LIBRARY_PATH` — list what the binary
+needs with `module load <your build modules>; ldd <rmg-gpu>`.
+
+**Symptom → cause** (all seen while setting this example up):
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `hipErrorInvalidDeviceFunction` from rocBLAS/hipBLAS | ROCm mismatch | `RMG_ROCM` = the ROCm `rmg-gpu` was built with |
+| `error while loading shared libraries: ... cannot open shared object file` | library not bound / not on the path | add the bind (`launch_flux.slurm`) and directory (`RMG_LD_LIBRARY_PATH`) |
+| `HSA exception: hsaKmtSVMSetAttr failed` then `hipHostMalloc failed`, exit 137 | out of GPU memory: too few GPUs for the cell (happens natively too) | more ranks/nodes (`max_tasks_per_job`, `allocated_nodes`) or smaller cells |
+| `MPI_Init` abort `Unable to use a NIC_POLICY of 'NUMA'` (>1 node) | NIC policy | keep `MPICH_OFI_NIC_POLICY=BLOCK` (section 9) |
+| `rmg-gpu` hangs at start with an empty log (>1 node) | HIP sees no GPUs after a multi-node `MPI_Init` | keep `FI_HMEM=system` (section 9) |
+
+A 4-line `HSA exception: hsaKmtSVMSetAttr failed.` per rank *without* a following error
+is harmless (seen with the image's ROCm; speed and results unaffected).
+
+**Check after any rebuild** (a couple of minutes, one debug node): run the isolated Bi
+atom through `converge_dft_data` once with each solver (`kohn_sham_solver:` in a copy of
+the recipe, `directory: DFT/isolated_elements/Bi`) and compare with the numbers below.
+
+**Choosing the solver.** Both now work in the container, single- and multi-node:
+
+| BiSe cells, 1 node, 8 ranks (11-12 atoms) | `davidson` | `multigrid` |
+|---|---|---|
+| energies | — | same as davidson to < 0.003 meV |
+| time per single point | 40-66 s | 53-81 s (1.2-1.9x slower) |
+| isolated Bi | does not converge (energy oscillates ~3 Ha) | 11 SCF steps, 62 s (1 node) / 41 s (2 nodes) |
+| isolated Se | 10 SCF steps, -256.198 eV | 7 SCF steps, **-253.766 eV — 2.43 eV higher** |
+
+Davidson is faster for small cells like these; multigrid's near-linear scaling is what
+pays off for the large systems RMG is meant for (hundreds to thousands of atoms on
+large allocations) — the crossover depends on the system and wasn't measured here.
+**Isolated atoms need care with either:** on Se, multigrid settled into the
+higher-energy state Davidson passes through in its first steps (-9.3257 Ha) instead of
+Davidson's -9.4151 Ha, so a multigrid E0 can be wrong while looking converged — and the
+Bi E0 currently has only multigrid values to go on. Check isolated-atom energies before
+using them as MACE E0s.
 
 ## 4. Launch: `launch_flux.slurm`
 
@@ -150,7 +205,7 @@ What it does:
 
 ```bash
 srun -N <nodes> -n <nodes> --external-launcher --gpu-bind=closest --mpi=pmi2 --cpu-bind=none \
-    apptainer exec --bind /opt/cray/:/opt/cray --bind /usr/lib64/:/opt/cray_extra/lib64 \
+    apptainer exec --bind $RMG_ROCM/:$RMG_ROCM --bind /opt/cray/:/opt/cray --bind /usr/lib64/:/opt/cray_extra/lib64 \
                    --bind /var/spool/slurmd <sif> \
     flux start bash <initial program>
 ```
@@ -166,7 +221,8 @@ srun -N <nodes> -n <nodes> --external-launcher --gpu-bind=closest --mpi=pmi2 --c
 - The initial program prints `flux resource list` (expect N nodes, 56N cores, 8N
   GPUs) and then runs `run_pipeline.py` with `PYTHONPATH` set to your checkouts —
   scoped to that one command rather than the whole container.
-- Binds: `/opt/cray` carries the Cray PE libraries `rmg-gpu` links (MPICH, FFTW, HDF5,
+- Binds: `$RMG_ROCM` (default `/opt/rocm-6.3.1`) is the host ROCm `rmg-gpu` was built
+  against (step 3b); `/opt/cray` carries the Cray PE libraries `rmg-gpu` links (MPICH, FFTW, HDF5,
   LibSci, libfabric, PALS); `/usr/lib64` carries `libcxi.so.1` (Slingshot) and
   `libnl-3.so.200`; `/var/spool/slurmd` is what OLCF's own `apptainer-enable-mpi`
   module binds. `/lustre/orion` and `/sw/frontier` (Spack boost/bzip2) are already in
@@ -323,14 +379,16 @@ editing.
   Flux); pyRMG's estimate for it was 14 nodes, clamped by `max_tasks_per_job`. Keep DFT
   candidates within what your `max_tasks_per_job` can hold (`max_supercell_atoms` in the
   FT-MD input caps their size), or allow multi-node RMG jobs.
-- **RMG's `kohn_sham_solver` is `"davidson"`, not `"multigrid"`, for now.** `multigrid`
-  failed here with the same HSA error (and `hipErrorInvalidDeviceFunction`) and was
-  blamed on multigrid itself, but given the item above it may have been the same
-  out-of-memory; being re-tested (section 9).
-- **The isolated Bi atom doesn't converge with `davidson`** (the total energy
-  oscillates by ~3 Ha and never settles); it was converged with `multigrid` outside the
-  container. Until that's sorted out, provide a converged Bi run (`make_smoke_copy.sh`'s
-  `CONVERGED_BI=`).
+- **Multigrid used to fail in the container** (`hipErrorInvalidDeviceFunction`) and was
+  blamed on multigrid itself; the cause was running `rmg-gpu` against the image's ROCm
+  instead of the one it was built with (step 3b). Both solvers work now; the recipe
+  default stays `davidson`, faster for this example's small cells.
+- **Isolated atoms:** Bi doesn't converge with `davidson`; with `multigrid` it does,
+  but multigrid put isolated Se 2.43 eV above Davidson's (lower, so better) solution —
+  step 3b. `converge_dft_data` uses one recipe for its whole `directory`, so to run the
+  isolated atoms with a different solver, run it separately on
+  `DFT/isolated_elements` with its own recipe copy (or pass `CONVERGED_BI=` to
+  `make_smoke_copy.sh` for the smoke test).
 - **`rmg_dft.py`'s subprocess call must use `shell=True`** and `close_fds=False` (the
   latter keeps Flux's PMI file descriptor). `shell=False` was confirmed, in a
   controlled A/B, to be an actual regression here.
@@ -402,7 +460,9 @@ HSA crash (that crash is RMG running out of GPU memory — it happens natively t
 container (host vs container ROCm runtime is the obvious difference); pyRMG's node
 estimate is far above what fits (14 nodes for the 99-atom cell, which runs on 2);
 each rank logs `HSA exception: hsaKmtSVMSetAttr failed.` 4 times in the container
-(harmless to speed or results); multigrid in the container (MULTIGRID_PLACEHOLDER).
+(harmless to speed or results). Multigrid in the container: works with the host ROCm
+(step 3b); 2 nodes x 8 ranks via `converge_dft_data` converged the isolated Bi atom in
+11 SCF steps / 41 s, the same energy as the native multigrid reference (36 s).
 Also unchecked: that `rmg_dft.py`'s `stress_voigt` (taken from the ASE calculator, so
 ASE's sign convention) matches the training data's once loop-2 candidates converge.
 
