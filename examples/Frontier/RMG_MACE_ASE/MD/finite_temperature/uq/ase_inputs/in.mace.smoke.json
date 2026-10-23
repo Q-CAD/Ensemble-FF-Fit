@@ -13,5 +13,6 @@
     "optsteps": 20,
     "cycles": 1,
     "defect_prob": 0.75,
-    "max_energy_deviation_per_atom": 5.0
+    "max_energy_deviation_per_atom": 5.0,
+    "max_supercell_atoms": 24
 }

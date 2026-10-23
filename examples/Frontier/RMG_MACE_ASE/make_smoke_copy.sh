@@ -14,6 +14,11 @@
 # model.model argument the MACE-OMat-0 medium checkpoint is downloaded
 # (login nodes only -- compute nodes have no direct internet).
 # Writes only under <dest>, which must not already exist.
+#
+# CONVERGED_BI=<dir>: copy a converged isolated-Bi RMG run (its
+# properties.json etc.) into DFT/isolated_elements/Bi, so converge_dft_data
+# skips it -- the isolated Bi atom does not converge with davidson
+# (README.md pitfalls), and build_ff_inputs needs its E0.
 
 set -euo pipefail
 
@@ -42,6 +47,11 @@ for rel in "${KEEP_STRUCTURES[@]}"; do
     mkdir -p "$DEST/DFT/$rel"
     cp "$SRC/DFT/$rel/POSCAR" "$DEST/DFT/$rel/POSCAR"
 done
+
+if [[ -n "${CONVERGED_BI:-}" ]]; then
+    [[ -f "$CONVERGED_BI/properties.json" ]] || { echo "no properties.json in CONVERGED_BI=$CONVERGED_BI" >&2; exit 1; }
+    rsync -a --exclude Waves --exclude POSCAR "$CONVERGED_BI"/ "$DEST/DFT/isolated_elements/Bi/"
+fi
 
 sed -e "s|^rmg_executable: .*|rmg_executable: \"$RMGDFT/build-frontier-gpu/rmg-gpu\"|" \
     -e "s|^vdwdf_kernel_filepath: .*|vdwdf_kernel_filepath: \"$RMGDFT/XC/vdW_kernel_table\"|" \

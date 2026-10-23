@@ -126,6 +126,61 @@ Branch: `frontier-rmg-update` (off `efffit_2`). Slurm account: `mat201`
 - Python's stdout was block-buffered into the Slurm file, so "Stage:"
   lines appeared only at exit; `launch_flux.slurm` now sets
   `PYTHONUNBUFFERED=1`.
+- **Smoke run 2** (5744818, 4:36, resume after the batch-size fix):
+  `converge_dft_data` skipped all 12 ("nothing new to run"), FT-MD skipped
+  (4/4 done), 3 fits + validation single points ran, `downselect` ranked
+  and kept 2 (`spread`), 88 MD frames unpacked, UQ single points, 2
+  candidates written to `DFT/uq/1`. **Loop 1 complete.**
+- The candidates are **99-atom** cells (Bi54Se45): `balanced_supercell
+  (max_atoms=100)` (enabled in this branch, as in VASP_MACE_ASE) made a
+  3x3 supercell of the 11-atom vacancy cell before MD.
+- **Smoke run 3** (5744930, rerun of `--stage all`): only the 2 new
+  `uq/1` POSCARs were submitted. Both RMG runs (davidson, 8 ranks, 1 node)
+  died within ~1 min: `HSA exception: hsaKmtSVMSetAttr failed.` then
+  `Error: hipHostMalloc failed. at LINE 1151 in .../RMG/Common/Kpoint.cpp`,
+  exit 137; the stage then raised "all 2 RMG run(s) failed", as designed.
+  **This is the same HSA error the README attributed to `multigrid` --
+  here with davidson, so the solver can't be the whole story.** It is
+  size-dependent (11-12 atom cells fine). Hypotheses: (a) a low
+  RLIMIT_MEMLOCK inside Flux jobs limits pinned host memory
+  (hipHostMalloc); (b) `HSA_XNACK=1`, set globally by the image for
+  LAMMPS, changes ROCm's SVM host-memory registration for a binary not
+  built for xnack. Test: `smoke/hsa_test/hsa_test.sh` (job 5744976).
+- **HSA test 1** (5744976, `flux run -n8 -c6 -g1 rmg-gpu` directly, chore
+  env): RLIMIT_MEMLOCK is `unlimited` both in Flux's initial program and
+  inside Flux jobs -> **(a) ruled out**. With `HSA_XNACK=0` the run still
+  logs `hsaKmtSVMSetAttr failed` x14 and dies (137) at ~60 s, just
+  without the hipHostMalloc line -> **(b) ruled out** as the sole cause.
+  Every rank listed all 8 GPUs in its RMG log. (That job sat in Slurm's
+  "CG" state ~5+ min after finishing -- node epilog, not our processes.)
+- **HSA test 2** (5745138): one visible GPU per rank, via
+  `ROCR_VISIBLE_DEVICES=$FLUX_TASK_LOCAL_ID` (C) or Flux's
+  `-o gpu-affinity=per-task` (D). RMG logs then list only `device 0`, but
+  both fail identically -> **GPU visibility ruled out.**
+- Next hypothesis: the container's ROCm 6.3.3 user-space runtime
+  (`libhsa-runtime64`, which links the hsakmt thunk making the failing SVM
+  ioctl) against the host's amdgpu/KFD driver, vs the host `rocm/6.3.1`
+  rmg-gpu was built with. Test `rocm_test.slurm` (5745177): E native
+  srun + modules; F srun + apptainer with host /opt/rocm-6.3.1 bound and
+  first; G srun + apptainer with container ROCm (no Flux).
+- **ROCm test** (5745177): E (native srun, build modules, host ROCm
+  6.3.1, no container, no Flux) **also dies** -- `hipHostMalloc failed`,
+  rc 137, ~35 s; F and G (srun + apptainer, host vs container ROCm) die
+  the same way. **So it is not the container, Flux, or the ROCm version:
+  the input doesn't fit in 8 GPUs.** pyRMG's estimator asked for 112 ranks
+  (14 nodes) for these cells (Bi54Se45 = 1080 valence electrons; default
+  `electrons_per_gpu: 10`), and `max_tasks_per_job: 8` clamped it to 1
+  node. The HSA / hipHostMalloc lines are how RMG reports the failed
+  allocation; 137 is the kill that follows.
+  **Implication for the README's old pitfall** ("multigrid fails with
+  hsaKmtSVMSetAttr, even at a single MPI task"): very possibly the same
+  out-of-memory, not a multigrid/container incompatibility -- to re-test in
+  Phase 2 with a structure that fits, and with enough nodes.
+- To finish the generation-2 smoke on 1 node: `ase_mace_md.py` now takes
+  the supercell cap from the MD input (`max_supercell_atoms`, default 100
+  = unchanged behaviour); `in.mace.smoke.json` sets 24.
+  `make_smoke_copy.sh` takes `CONVERGED_BI=<dir>` to pre-place the
+  converged Bi run. Fresh copy `smoke/run2`, job 5745231.
 
 ## Phase 2: multi-node RMG
 

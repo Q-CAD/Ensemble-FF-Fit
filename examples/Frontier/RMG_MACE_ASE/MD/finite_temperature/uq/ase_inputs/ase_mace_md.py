@@ -214,7 +214,10 @@ def run_finite_temperature_md(ff_list, struct_list, output_list, in_file_list):
         with open(inp) as fh:
             cfg = json.load(fh)
         init_conf = read(struct)
-        init_conf = balanced_supercell(init_conf, max_atoms=100)
+        # Supercell size caps the size of every DFT candidate this MD
+        # produces -- keep it within what one RMG job can hold (a 99-atom
+        # Bi-Se cell needs more than one node's 8 GPUs).
+        init_conf = balanced_supercell(init_conf, max_atoms=cfg.get('max_supercell_atoms', 100))
         init_conf.set_calculator(calculator)
 
         # 2) Initialize the calculation

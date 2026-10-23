@@ -306,11 +306,20 @@ editing.
   broker) — the Perlmutter convention.
 - **mace-torch ≥ 0.3.15 for `freeze`** — `freeze: 6` (0.3.16) trains only the
   readouts. The derived image pins 0.3.16 and fails the build otherwise.
-- **RMG's `kohn_sham_solver` is `"davidson"`, not `"multigrid"`.** `multigrid` failed
-  under this Flux/Apptainer setup with `HSA exception: hsaKmtSVMSetAttr failed` /
-  `hipErrorInvalidDeviceFunction`, even at a single MPI task. This was mistaken for a
-  launch-mechanism bug for a long time before being traced to the solver; revisiting
-  it is part of the multi-node work (`INVESTIGATION_NOTES.md`).
+- **`HSA exception: hsaKmtSVMSetAttr failed` / `hipHostMalloc failed` means RMG ran out
+  of memory** — a job given too few GPUs for its structure. Confirmed 2026-10-23: a
+  99-atom Bi-Se cell on one node's 8 GPUs fails this way natively too (no container, no
+  Flux); pyRMG's estimate for it was 14 nodes, clamped by `max_tasks_per_job`. Keep DFT
+  candidates within what your `max_tasks_per_job` can hold (`max_supercell_atoms` in the
+  FT-MD input caps their size), or allow multi-node RMG jobs.
+- **RMG's `kohn_sham_solver` is `"davidson"`, not `"multigrid"`, for now.** `multigrid`
+  failed here with the same HSA error (and `hipErrorInvalidDeviceFunction`) and was
+  blamed on multigrid itself, but given the item above it may have been the same
+  out-of-memory; being re-tested (`INVESTIGATION_NOTES.md`).
+- **The isolated Bi atom doesn't converge with `davidson`** (the total energy
+  oscillates by ~3 Ha and never settles); it was converged with `multigrid` outside the
+  container. Until that's sorted out, provide a converged Bi run (`make_smoke_copy.sh`'s
+  `CONVERGED_BI=`).
 - **`rmg_dft.py`'s subprocess call must use `shell=True`** and `close_fds=False` (the
   latter keeps Flux's PMI file descriptor). `shell=False` was confirmed, in a
   controlled A/B, to be an actual regression here.
