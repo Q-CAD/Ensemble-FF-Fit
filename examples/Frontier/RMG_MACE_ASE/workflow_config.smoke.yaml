@@ -1,0 +1,254 @@
+# SMOKE-TEST config: workflow_config.yaml with identical wiring, shrunk to
+# run end to end on 1 node in well under an hour (two 30-min debug jobs; a
+# rerun resumes). Use it in a scratch copy made by make_smoke_copy.sh, which
+# keeps only a dozen small structures under DFT/. Differences from
+# workflow_config.yaml, and nothing else:
+#   converge_dft_data.cores_per_task        7    -> 6  (8 x 7 = 56 > the 55 Flux offers on 1 node)
+#   sample_ft_md_structures.total           20   -> 4
+#   build_ff_inputs.total_cap               100  -> 3
+#   build_ff_inputs.mace_overrides          + max_num_epochs: 2
+#   finite_temperature_md.in_file           in.mace.json -> in.mace.smoke.json (100 steps, 1 cycle)
+#   downselect_force_fields.number_to_copy  25   -> 2
+#   dft_candidate_selection.total           80   -> 2
+#
+# Single config for run_pipeline.py. Run one stage at a time -- each is its
+# own compute allocation/apptainer invocation -- or run them all in sequence
+# in one process via --stage all:
+#
+#   python run_pipeline.py --config workflow_config.yaml --stage converge_dft_data
+#   python run_pipeline.py --config workflow_config.yaml --stage sample_ft_md_structures
+#   python run_pipeline.py --config workflow_config.yaml --stage build_ff_inputs
+#   python run_pipeline.py --config workflow_config.yaml --stage fit_and_validate
+#   python run_pipeline.py --config workflow_config.yaml --stage downselect
+#   python run_pipeline.py --config workflow_config.yaml --stage uq_single_points
+#   python run_pipeline.py --config workflow_config.yaml --stage select_dft_candidates
+#   python run_pipeline.py --config workflow_config.yaml --stage all
+#
+# NEXT GENERATION: every key tagged "# GEN" below holds a generation-
+# specific location (generation_1 / uq/1 for the first loop). To run loop
+# N, bump each one to generation_N (and uq/N-1 -> uq/N), seed
+# FF/generation_N/mace-omat-medium/model.model (README.md step 5), and run
+# `--stage all` again -- its converge_dft_data stage runs RMG on the
+# previous loop's DFT/uq/<N-1> candidates first. Path keys left null
+# below default to the "# GEN" key that produces them (see run_pipeline.py's
+# _with_defaults), so they don't need editing.
+
+# Stage: converge_dft_data. Submits one RMG chore per (structure, rmg_yaml)
+# pair under `directory`, sized per-job from its own computed
+# allocated_nodes. dft_task/rmg_yaml_name are this DFT backend's own
+# driver/recipe -- see run_pipeline.py's module docstring for why this
+# stays RMG-specific rather than a generic abstraction.
+converge_dft_data:
+  directory: DFT
+  dft_task: DFT/rmg_dft.py
+  structure_filename: POSCAR
+  rmg_yaml_name: vdW_quench.yml
+  entry_point: run_rmg_calculation
+  check_files: [dft_recipe]
+  finished_file: properties.json
+  # One MPI rank per GPU, 8 GCDs per Frontier node. Flux offers 56 x N - 1
+  # cores on N nodes (one stays with the broker -- check Free_cores= in
+  # matensemble_workflow.log), so 8 ranks x 7 cores can't fill every node of
+  # the allocation: use 6 (and rmg_num_threads <= 6) when an RMG job needs
+  # all of it, e.g. any 1-node run.
+  gpus_per_node: 8
+  gpus_per_task: 1
+  cores_per_task: 6
+  rmg_num_threads: 5
+  max_tasks_per_job: 8
+
+# Stage: sample_ft_md_structures. Samples `total` structures out of
+# converge_dft_data's training subtree, spread as evenly as possible across
+# distinct mp-ids, as starting structures for finite_temperature_md.
+# source_root defaults to converge_dft_data.directory/training_subpath when
+# null; dest_root defaults to finite_temperature_md.ase_inputs_directory/
+# structures_subpath when null -- structures live inside ase_inputs_directory
+# (same convention as MD_single_points/MD_uq_single_points), not in a
+# separately tracked directory. Site-specific selection logic (which
+# structures feed FT-MD, and how) is deliberately its own small stage rather
+# than folded elsewhere, so it stays easy to find and adjust.
+sample_ft_md_structures:
+  source_root: DFT/training
+  training_subpath: training
+  dest_root: null
+  structure_filename: POSCAR
+  total: 4
+  seed: 0
+
+# Stage: build_ff_inputs. Builds mace_inputs/ from converged DFT data before
+# fit_and_validate runs: per-composition training .xyz (one per
+# DFT/training/Defects/<system>/<composition>/ subtree -- each becomes a
+# combinable label), a fixed combined validation .xyz (DFT/validation/EoS,
+# never split/sampled), isolated-atom E0s (DFT/isolated_elements), then a
+# randomly-sampled ensemble of numbered train.xyz/test.xyz/config.yml
+# folders. extra_training_subpaths adds one more label per entry: converged
+# RMG runs under dft_root (e.g. uq/1, a previous loop's candidates, labelled
+# uq_1); always_include_labels puts a label in every member's training set
+# instead of sampling it like the others. mace_inputs_dir defaults to fine_tuning.inputs_directory when
+# null, so there's one place (not two) to point at where fitting reads from.
+# mace_overrides is baked into each folder's own config.yml here, once --
+# fit_and_validate has no equivalent key, since by the time fitting runs
+# everything it needs is already in that config.yml (fine_tuning.config
+# points MACE's own --config flag at it).
+build_ff_inputs:
+  dft_root: DFT
+  mace_inputs_dir: null
+  training_subpath: training/Defects
+  validation_subpath: validation/EoS
+  isolated_elements_subpath: isolated_elements
+  extra_training_subpaths: []                                    # GEN: e.g. [uq/1] for generation_2
+  always_include_labels: []                                      # GEN: e.g. [uq_1] -- every member trains on the new DFT data
+  structure_filename: POSCAR
+  total_cap: 3
+  seed: 0
+  energy_num: 3
+  force_num: 3
+  stress_num: 1
+  mace_overrides:
+    freeze: 6
+    max_num_epochs: 2
+
+# Stage: fit_and_validate. Covers this section plus validation_mirroring,
+# copy_force_fields, MD_single_points, and finite_temperature_md below (all
+# five are read by the one run_fit_and_validate call) -- MACE ensemble
+# fitting, its reactive per-variant validation single points, and the flat,
+# upfront finite-temperature MD batch, all in one Pipeline/submission.
+fine_tuning:
+  # FFMatEnsemble recursively searches run_directory for ANY file named
+  # foundation_model and cross-products every match it finds against all
+  # mace_inputs folders -- so run_directory must point directly at the one
+  # seed model's own directory (generation_1/mace-omat-medium), not a
+  # broader ancestor like generation_1 itself. Pointing it at the ancestor
+  # risks unwanted extra re-fits if a second, unrelated model.model (e.g. an
+  # FT-MD comparison copy) ever appears in a sibling directory under that
+  # same ancestor. Fitted output lands at generation_1/mace-omat-medium/<i>/
+  # (results_dir is derived from the matched model's own directory, not from
+  # this config value). See the top-level doc for the one-time setup step
+  # that seeds this directory with a copy of FF/generation_0's foundation
+  # model before running this stage.
+  run_directory: FF/generation_1/mace-omat-medium                # GEN
+  inputs_directory: FF/generation_1/mace_inputs                  # GEN
+  # ff_task/entry_point name the FF-fitting driver script and its entry-point
+  # function -- same convention as converge_dft_data's dft_task/entry_point.
+  # Porting to a different FF backend means pointing ff_task at a different
+  # driver script with a matching run_<backend>_fit(overrides) entry point,
+  # not touching Ensemble-FF-Fit itself.
+  ff_task: FF/mace_fit.py
+  entry_point: run_mace_fit
+  check_files: [foundation_model]
+  foundation_model: model.model
+  train_file: train.xyz
+  test_file: test.xyz
+  config: config.yml
+  finished_file: FF_*.model
+  num_tasks: 1
+  cores_per_task: 1
+  gpus_per_task: 1
+
+# Mirrors completed DFT validation results (POSCAR + properties.json) into
+# MD_single_points' inputs_directory before fitting starts -- properties.json
+# here is the DFT ground truth used later for FF ranking, not an MD output.
+validation_mirroring:
+  source_root: DFT/validation
+  dest_root: MD/single_points/validation/ase_inputs/structures
+  filenames: [POSCAR, properties.json]
+
+copy_force_fields:
+  target_directory: MD/single_points/validation/generation_1/force_fields   # GEN
+  target_name: model.model
+  pattern: '^FF_([^._-]+)\.model$'
+
+MD_single_points:
+  inputs_directory: MD/single_points/validation/ase_inputs
+  check_files: [ffield]
+  ffield: model.model
+  in_file: null
+  control: null
+  structure: POSCAR
+  finished_file: properties.json
+  lammps_task: ase_mace.py
+  entry_point: run_ase_single_points
+  num_tasks: 1
+  cores_per_task: 1
+  gpus_per_task: 1
+
+# FT-MD with the foundation model, submitted up front (no fit/validation
+# dependency -- it deliberately uses the pre-refit foundation model).
+# Structures live at ase_inputs_directory/structures_subpath (default
+# "structures") -- sample_ft_md_structures' dest_root writes there by
+# default -- not a separately tracked structures_directory.
+finite_temperature_md:
+  structures_subpath: structures/generation_1                    # GEN
+  output_directory: MD/finite_temperature/uq/generation_1/mace-omat-medium   # GEN
+  foundation_model: MD/finite_temperature/uq/generation_0/mace-omat-medium/model.model
+  ase_inputs_directory: MD/finite_temperature/uq/ase_inputs
+  in_file: MD/finite_temperature/uq/ase_inputs/in.mace.smoke.json
+  lammps_task: ase_mace_md.py
+  entry_point: run_finite_temperature_md
+  structure_filename: POSCAR
+  finished_file: properties.json
+  num_tasks: 1
+  cores_per_task: 1
+  gpus_per_task: 1
+
+# Stage: downselect. Ranks fitted FFs against DFT ground truth, copies the
+# top performers into MD_uq_single_points.run_directory, then unpacks every
+# saved FT-MD trajectory frame into MD_uq_single_points.inputs_directory's
+# structures/ subtree. Null paths default to copy_force_fields.
+# target_directory, MD_single_points.inputs_directory and
+# MD_uq_single_points.run_directory.
+downselect_force_fields:
+  force_fields_dir: null
+  ase_inputs_dir: null
+  dest_dir: null
+  energy_weight: 1.0
+  force_weight: 1.0
+  number_to_copy: 2
+  strategy: spread
+  seed: null
+
+# Null paths default to finite_temperature_md.output_directory and
+# MD_uq_single_points.inputs_directory/structures.
+trajectory_unpacking:
+  source_root: null
+  dest_root: null
+
+# Stage: uq_single_points (Pipeline 2). Flat, non-reactive: every downselected
+# FF x every unpacked frame. parent_levels=8 batches all of one force
+# field's structures into a single chore (verified against the current
+# structures/ nesting depth: Defects/<chemsys>/<formula>/<mp-id>/
+# <defect_type>/<defect_instance>/<frame_index> = 7, plus the "structures"
+# segment itself = 8) -- update if the structures tree's shape changes.
+# lammps_task is a path (not a bare filename), so every generation's
+# inputs_directory shares the one driver script in MD/single_points/uq/
+# ase_inputs instead of needing its own copy.
+MD_uq_single_points:
+  run_directory: MD/single_points/uq/generation_1/force_fields   # GEN
+  inputs_directory: MD/single_points/uq/generation_1/ase_inputs  # GEN
+  check_files: [ffield]
+  ffield: model.model
+  in_file: null
+  control: null
+  structure: POSCAR
+  finished_file: properties.json
+  lammps_task: MD/single_points/uq/ase_inputs/ase_mace.py
+  entry_point: run_ase_single_points
+  parent_levels: 8
+  num_tasks: 1
+  cores_per_task: 1
+  gpus_per_task: 1
+
+# Stage: select_dft_candidates. Scores UQ single points by cross-FF ensemble
+# disagreement and writes the most-uncertain, well-spread frames as the next
+# round's DFT candidates. total/score_cap: use a non-positive/null value for
+# uncapped.
+# force_fields_dir null -> MD_uq_single_points.run_directory.
+dft_candidate_selection:
+  force_fields_dir: null
+  dest_root: DFT/uq/1                                            # GEN
+  energy_weight: 1.0
+  force_weight: 1.0
+  max_per_run: 6
+  image_distance: 2
+  total: 2
+  score_cap: null

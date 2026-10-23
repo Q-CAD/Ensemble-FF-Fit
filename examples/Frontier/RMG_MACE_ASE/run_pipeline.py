@@ -84,6 +84,19 @@ RMG_LD_LIBRARY_PATH = (
 )
 
 
+def chore_pythonpath():
+    """PYTHONPATH for every chore: this EnsembleFFFit checkout first, then
+    whatever PYTHONPATH the pipeline itself was launched with
+    (launch_flux.slurm puts the Ensemble-FF-Fit and pyRMG checkouts there).
+    A chore's Resources.env value replaces the inherited one rather than
+    extending it, so without the second half pyRMG -- not installed in the
+    image -- would be unimportable inside the RMG chores.
+    """
+    from EnsembleFFFit.utilities.general import ensemble_fffit_pythonpath
+
+    return os.pathsep.join(p for p in (ensemble_fffit_pythonpath(), os.environ.get('PYTHONPATH')) if p)
+
+
 def rmg_container_env(cores_per_task, rmg_num_threads):
     """Env for the rmg-gpu chore/task specifically -- see RMG_LD_LIBRARY_PATH docstring.
 
@@ -95,10 +108,8 @@ def rmg_container_env(cores_per_task, rmg_num_threads):
     confirmed GOMP affinity bug under Apptainer -- OMP_PLACES must stay
     genuinely unset (not an empty string, which crashes libgomp).
     """
-    from EnsembleFFFit.utilities.general import ensemble_fffit_pythonpath
-
     return {
-        'PYTHONPATH': ensemble_fffit_pythonpath(),
+        'PYTHONPATH': chore_pythonpath(),
         'OMP_PROC_BIND': 'false',
         'OMP_NUM_THREADS': str(cores_per_task),
         'RMG_NUM_THREADS': str(rmg_num_threads),
@@ -564,7 +575,7 @@ def run_fit_and_validate(config):
     from matensemble.model import Resources
     from matensemble.chore import ChoreSpec
     from EnsembleFFFit.base import FFMatEnsemble, MDMatEnsemble
-    from EnsembleFFFit.utilities.general import ensemble_fffit_pythonpath, make_mirrored_rename_dest_path_fn
+    from EnsembleFFFit.utilities.general import make_mirrored_rename_dest_path_fn
 
     fine_tuning_cfg = config['fine_tuning']
     copy_cfg = config['copy_force_fields']
@@ -643,7 +654,7 @@ def run_fit_and_validate(config):
 
     @pipe.strategy(bolo_list=["fit_mace"], name="copy_and_spawn_md",
                    num_tasks=1, cores_per_task=1, gpus_per_task=0,
-                   env={'PYTHONPATH': ensemble_fffit_pythonpath()}, inherit_env=True)
+                   env={'PYTHONPATH': chore_pythonpath()}, inherit_env=True)
     def copy_and_spawn_md(fit_result):
         """
         Runs once per completed fit_mace chore: copies that one fitted
@@ -706,7 +717,7 @@ def run_fit_and_validate(config):
     fitting_resources = Resources(num_tasks=fine_tuning_cfg.get('num_tasks', 1),
                                    cores_per_task=fine_tuning_cfg.get('cores_per_task', 1),
                                    gpus_per_task=fine_tuning_cfg.get('gpus_per_task', 1),
-                                   env={'PYTHONPATH': ensemble_fffit_pythonpath()},
+                                   env={'PYTHONPATH': chore_pythonpath()},
                                    inherit_env=True)
 
     for mace_inputs in mace_arg_dict_list:
@@ -745,7 +756,7 @@ def run_fit_and_validate(config):
             print(f"finite_temperature_md: every structure under {ft_md_structures_root} already has "
                   f"'{ft_md_cfg.get('finished_file')}' -- skipping FT-MD.")
         ft_md_resources = Resources(**ft_md_resources_kwargs,
-                                     env={'PYTHONPATH': ensemble_fffit_pythonpath()}, inherit_env=True)
+                                     env={'PYTHONPATH': chore_pythonpath()}, inherit_env=True)
         for task_dict in ft_md_task_dicts:
             pipe.call("run_ft_md", task_dict, resources=ft_md_resources)
 
@@ -835,7 +846,6 @@ def run_uq_single_points(config):
     from matensemble.pipeline import Pipeline
     from matensemble.model import Resources
     from EnsembleFFFit.base import MDMatEnsemble
-    from EnsembleFFFit.utilities.general import ensemble_fffit_pythonpath
 
     uq_cfg = config['MD_uq_single_points']
     _require(uq_cfg, 'MD_uq_single_points', ['run_directory', 'inputs_directory'])
@@ -881,7 +891,7 @@ def run_uq_single_points(config):
         """Thin chore wrapper -- the real MD-execution logic lives in MDMatEnsemble.run_individual."""
         return MDMatEnsemble.run_individual(task_dict)
 
-    resources = Resources(**resources_kwargs, env={'PYTHONPATH': ensemble_fffit_pythonpath()}, inherit_env=True)
+    resources = Resources(**resources_kwargs, env={'PYTHONPATH': chore_pythonpath()}, inherit_env=True)
     for task_dict in task_dicts:
         pipe.call("run_uq_ase", task_dict, resources=resources)
 
