@@ -43,6 +43,15 @@ From: {{ BASE_SIF }}
     $PIP mace-torch==0.3.16 openequivariance==0.6.8 \
         pymatgen-analysis-defects mp-api matminer
 
+    # 4. One complete set of Flux Python bindings. The pip flux-python 0.70.0
+    #    in /opt/basic lacks _flux._rlist, which flux.resource (and so
+    #    MatEnsemble's FluxManager) imports; flux-core's own `make install`
+    #    put a complete 0.70.0 set in /usr/local/lib/python3.12/site-packages
+    #    (same split as the Perlmutter image -- see its launch script). Drop
+    #    the pip copy and add the complete one to /opt/basic's path.
+    /opt/basic/bin/python -m pip uninstall -y flux-python
+    echo /usr/local/lib/python3.12/site-packages > /opt/basic/lib/python3.12/site-packages/flux-core-bindings.pth
+
     # Fail the build, not the first chore, if anything above is off.
     /opt/basic/bin/python - <<'PY'
 import importlib.metadata as md

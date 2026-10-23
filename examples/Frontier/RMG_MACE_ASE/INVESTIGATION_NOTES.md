@@ -40,7 +40,8 @@ Branch: `frontier-rmg-update` (off `efffit_2`). Slurm account: `mat201`
 - Host has `vasp/6.6.0-gpu`, `vasp/6.6.1-gpu`; user is in the `vasp` group.
   ROCm modules up to 7.x now exist (README said 6.3.1 was newest).
 - Newer images published: `frontier-v0.5.6` ... `frontier-v0.5.9`. Chose
-  `frontier-v0.5.8` (= MatEnsemble 0.5.8, what Perlmutter validated).
+  `frontier-v0.5.8` to match Perlmutter's MatEnsemble 0.5.8 -- but see
+  Phase 1: that tag doesn't actually contain MatEnsemble 0.5.8.
 
 ## Phase 1: example update
 
@@ -74,6 +75,16 @@ Branch: `frontier-rmg-update` (off `efffit_2`). Slurm account: `mat201`
   chore set it to the Ensemble-FF-Fit root only. With pyRMG on PYTHONPATH
   instead of installed in the image, RMG chores could not have imported it.
   `chore_pythonpath()` appends the launcher's PYTHONPATH.
+- **Derived build #1** (5744327, 4 min): every pip install succeeded, but
+  the build-time check failed on `import flux.resource` --
+  `No module named '_flux._rlist'`. The image's pip `flux-python` 0.70.0
+  (in `/opt/basic`) is incomplete; flux-core's `make install` left a
+  complete 0.70.0 set in `/usr/local/lib/python3.12/site-packages` (same
+  split as the Perlmutter image). MatEnsemble's FluxManager imports
+  `flux.resource.list`. Fix in the .def: uninstall the pip copy, add a
+  `.pth` for the complete one. (The old sandbox had the same split and
+  worked, presumably because `flux start` prepends its own python dir to
+  the initial program's PYTHONPATH -- the build check runs outside Flux.)
 
 ## Phase 2: multi-node RMG
 
