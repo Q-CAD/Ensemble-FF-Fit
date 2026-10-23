@@ -259,5 +259,20 @@ show ranks join, memory fits and the per-step time, without converging.
   natively). Matrix test `flux_gpu_mpi_matrix.slurm` (5745756): hipfirst
   build, HSA_XNACK=0/unset, FI_HMEM=system,
   FI_MR_ROCR_CACHE_MONITOR_ENABLED=0; then RMG with the first that works.
+- **Matrix result** (5745756, 2 nodes x 8 via Flux, BLOCK):
+  | case | GPUs seen (of 16) | notes |
+  |---|---|---|
+  | baseline, GPU support 0 | 0 | host Allreduce OK |
+  | baseline, GPU support 1 | 0 | MPI_Init aborts: GTL `hsa_init ... HSA_STATUS_ERROR_OUT_OF_RESOURCES` |
+  | **hipfirst** (GPU query before MPI_Init), GPU support 0 | **16** | host Allreduce OK |
+  | **hipfirst**, GPU support 1 | **16** | **GPU-buffer Allreduce OK across 2 nodes**; distinct PCI ids per rank |
+  | HSA_XNACK=0, GPU support 0/1 | 0 / abort | XNACK ruled out |
+  | HSA_XNACK unset, FI_HMEM=system, FI_MR_ROCR_CACHE_MONITOR_ENABLED=0 | inconclusive | empty output: runs queued behind a timed-out job until their own 90 s timeout |
+  **So: initialising HIP before a multi-node MPI_Init fixes GPU visibility
+  and GPU-aware MPI.** Unmodified-binary route: `mpi_tests/hip_preinit.c`
+  -> `libhip_preinit.so`, an LD_PRELOAD shim whose constructor calls
+  `hipInit(0)` before main. Test `flux_preinit_rmg.slurm` (5745915): hello
+  + preload, RMG + preload on the 3-step-capped 99-atom case, and the 3
+  inconclusive cases again with the Flux queue drained between runs.
 
 ## Phase 3: VASP on Frontier

@@ -10,4 +10,7 @@ for variant in mpi_hello mpi_hello_hipfirst; do
     cc -O2 $flags -o $variant.new mpi_hello.c -I"${ROCM_PATH}/include" -D__HIP_PLATFORM_AMD__ -L"${ROCM_PATH}/lib" -lamdhip64
     mv -f $variant.new $variant   # rename, so a job already running the old binary is unaffected
 done
+cc -O2 -shared -fPIC -o libhip_preinit.so.new hip_preinit.c -I"${ROCM_PATH}/include" -D__HIP_PLATFORM_AMD__ \
+    -L"${ROCM_PATH}/lib" -lamdhip64
+mv -f libhip_preinit.so.new libhip_preinit.so
 ldd mpi_hello | grep -E "mpi|pmi|gtl|amdhip" 
