@@ -52,6 +52,7 @@ report() {  # case rc t0 t1
     grep "quench:" "$l" 2>/dev/null | sed 's/^/   /'
     grep "TOTAL ENERGY" "$l" 2>/dev/null | tail -2 | sed 's/^/   /'
     cat "$d"/bind.* 2>/dev/null | sort -k2 -n | sed -n '1p;2p;9p' | sed 's/^/   bind: /'
+    [[ -f "$d/timeline" ]] && sed 's/^/   /' "$d/timeline"
 }
 newdir() { rm -rf "$OUT/$1"; mkdir -p "$OUT/$1"; cp "$RMG_CASE"/rmg_input "$RMG_CASE"/*.upf "$OUT/$1/"; }
 
@@ -84,10 +85,13 @@ for c in $FLUX_CASES; do
         cpubind_hmem)    extra="--env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task --env=FI_HMEM=system --env=LD_PRELOAD=" ;;
         *) echo "unknown case \$c"; continue ;;
     esac
-    flux cancel --all >/dev/null 2>&1; flux queue idle --timeout=60s >/dev/null 2>&1
+    flux cancel --all >/dev/null 2>&1; flux queue idle --timeout=180s >/dev/null 2>&1
     rm -rf \$c; mkdir -p \$c; cp $RMG_CASE/rmg_input $RMG_CASE/*.upf \$c/; cd \$c; t0=\$(date +%s)
     timeout $RMG_TIMEOUT flux run \$base \$extra --env=BIND_OUT=$OUT/\$c/bind $OUT/task.sh $RMG rmg_input > rmg.stdout 2>&1
     echo "\$? \$t0 \$(date +%s)" > rc_t0
+    # When each rank's task started (bind files) and when RMG itself
+    # started -- separates Flux launch delay from rmg-gpu's own startup.
+    echo "launch \$(date -d @\$t0 +%T) tasks \$(ls -la --time-style=+%T bind.* 2>/dev/null | awk '{print \$6}' | sort | sed -n 1p) rmg_start \$(grep -m1 'Start time' rmg_input.00.log 2>/dev/null | awk '{print \$6}')" > timeline
     cd "$OUT"
 done
 EOF

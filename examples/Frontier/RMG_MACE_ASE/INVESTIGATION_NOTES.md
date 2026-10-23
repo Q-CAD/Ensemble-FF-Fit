@@ -297,8 +297,23 @@ show ranks join, memory fits and the per-step time, without converging.
   during an inter-node MPI_Init, before HIP.** (Why only in the container
   is still open: natively the same libfabric + Cray MPICH work -- the
   container's ROCm 6.3.3 runtime vs host 6.3.1 is the obvious difference.)
-- Timing study `rmg_timing.slurm` (2-SCF-step cap): job 1 (5746040)
-  `base cpubind cpubind_numa`; job 2 `cpubind_gpubind cpubind_xnack0
-  cpubind_hmem native`.
+- Timing study `rmg_timing.slurm` (2-SCF-step cap), **job 1** (5746040):
+  - `base` and `cpubind` ran as one 16-rank job but completed 0 SCF steps
+    in their 300 s: the time went to **startup**. `base`: tasks started
+    2 s after `flux run`, RMG's own `Start time` 3 min later. `cpubind`:
+    tasks waited 2.7 min to start (the previous case's killed processes
+    still releasing resources; 60 s drain too short), then 1.8 min to RMG
+    start. Neither reached a steady-state step -- no per-step numbers.
+  - `cpu-affinity=per-task` binds as intended: 6 cores + SMT siblings
+    per rank (rank 0 10-15/74-79, rank 1 17-22/81-86).
+  - `cpubind_numa`: MPI_Init abort in 28 s -- Flux's 6-core slices don't
+    line up with NUMA domains, so NUMA policy is still unusable.
+  - Lead: every rank sees all 8 GPUs under Flux (native: 1), so each of 8
+    processes per node initialises 8 GPUs -- plausible source of the slow
+    startup, the 4 hsaKmtSVMSetAttr warnings per rank, and slower steps.
+- **Job 2** (5746452, 400 s per case, 180 s drain): `native`,
+  `cpubind_gpubind` (one visible GPU per rank), `cpubind_hmem`
+  (FI_HMEM=system instead of the preload); per-case launch/task/RMG-start
+  timeline recorded.
 
 ## Phase 3: VASP on Frontier
