@@ -362,5 +362,18 @@ show ranks join, memory fits and the per-step time, without converging.
   (smoke: 8). Test: `phase2/pipe2node` -- `--stage converge_dft_data` on
   2 nodes, the two 99-atom uq/1 candidates with `max_scf_steps: 3`
   (5747038).
+- **Pipeline result** (5747038): each candidate submitted as `2 node(s),
+  16 MPI rank(s) x 7 core(s) x 1 GPU` (pyRMG's 112-rank estimate clamped
+  by max_tasks_per_job=16); RMG logged `16 MPI processes/image`, one
+  device per rank. uq/1/1: step 0 86.0 s, step 1 29.3 s, step 2 37.6 s
+  (native 2-node: 85-86 / 28.6-34.9 / 30.9 s); uq/1/0: 87.9 / - / 37.5 s.
+  **Multi-node RMG through the real pipeline runs at native speed.** Both
+  chores then "failed" by design: rmg-gpu exited normally, but pyRMG's
+  `read_results` raised `did not converge (Quench Electrons)` -- the
+  3-step cap.
+- 1- vs 2-node comparison, same structure, fully converged, through the
+  pipeline: the 25-atom Bi9Se16 candidate (old Consolidated_Pipeline
+  uq/1/44: 27 SCF steps, 275 s on 8 GPUs in the old sandbox) in
+  `phase2/scaling_{1,2}node` (max_tasks_per_job 8 / 16).
 
 ## Phase 3: VASP on Frontier
