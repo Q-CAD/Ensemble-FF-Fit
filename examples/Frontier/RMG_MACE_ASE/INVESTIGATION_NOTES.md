@@ -375,5 +375,38 @@ show ranks join, memory fits and the per-step time, without converging.
   pipeline: the 25-atom Bi9Se16 candidate (old Consolidated_Pipeline
   uq/1/44: 27 SCF steps, 275 s on 8 GPUs in the old sandbox) in
   `phase2/scaling_{1,2}node` (max_tasks_per_job 8 / 16).
+- **Phase 2 done-criterion result** (5747152 / 5747197, pipeline
+  `--stage converge_dft_data`, fully converged):
+  | | 1 node | 2 nodes |
+  |---|---|---|
+  | MPI | 8 PEs (2x2x2) | 16 PEs (4x2x2) |
+  | SCF steps | 26 | 29 |
+  | RMG total | 269.0 s | 173.2 s |
+  | mean per step | 10.35 s | 5.97 s (1.73x) |
+  | energy | -23172.17999939 eV | -23172.17999858 eV |
+  dE 8e-7 eV, max dF 1.7e-3 eV/A, max dstress 4.5e-6. (Old sandbox, same
+  structure, 1 node: 275 s, 10.6 s/step.)
+
+### Phase 2 summary -- what made multi-node RMG work in the container
+1. `MPICH_OFI_NIC_POLICY=BLOCK`, not NUMA (NUMA aborts MPI_Init on >1
+   node when Flux tasks aren't confined to one NUMA domain).
+2. `FI_HMEM=system` (or `libhip_preinit.so` via LD_PRELOAD): otherwise
+   libfabric's ROCr init during an inter-node MPI_Init leaves HIP with 0
+   GPUs and rmg-gpu hangs at startup. Root cause of *why only in the
+   container* not established (host vs container ROCm runtime suspected).
+3. For speed: brokers started with `srun --cpu-bind=none`, 7 cores per
+   rank with Flux per-task CPU affinity (one L3 group each), and each
+   rank's GPU = closest GCD (rmg_dft.py `closest_gpu_env`).
+Not needed: Perlmutter's "Flux libpmi first" (Flux does it itself),
+`mpi=True`, static R.json, extra device binds. Ruled out along the way:
+RLIMIT_MEMLOCK, HSA_XNACK, GPU visibility per rank, leaked SLURM/PALS env.
+Separately: the HSA `hsaKmtSVMSetAttr`/`hipHostMalloc failed` crash is
+RMG running out of GPU memory (too few GPUs for the cell), not a
+container problem.
+
+Still open: multigrid retest (may have been the same OOM); isolated-Bi
+davidson non-convergence; pyRMG's estimator (14 nodes for 99 atoms) vs
+what actually fits (2 nodes); `hsaKmtSVMSetAttr` x4 per rank in the
+container (harmless to speed).
 
 ## Phase 3: VASP on Frontier

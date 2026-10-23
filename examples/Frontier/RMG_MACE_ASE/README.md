@@ -150,7 +150,7 @@ lines (account, QOS, time, nodes) and its `SIF`/`ENSEMBLE_FF_FIT`/`PYRMG` defaul
 What it does:
 
 ```bash
-srun -N <nodes> -n <nodes> --external-launcher --gpu-bind=closest --mpi=pmi2 \
+srun -N <nodes> -n <nodes> --external-launcher --gpu-bind=closest --mpi=pmi2 --cpu-bind=none \
     apptainer exec --bind /opt/cray/:/opt/cray --bind /usr/lib64/:/opt/cray_extra/lib64 \
                    --bind /var/spool/slurmd <sif> \
     flux start bash <initial program>
@@ -161,7 +161,9 @@ srun -N <nodes> -n <nodes> --external-launcher --gpu-bind=closest --mpi=pmi2 \
   only for that bootstrap (the site default, `cray_shasta`, isn't something Flux's
   broker speaks) — it says nothing about how the chores' own MPI jobs get wired.
   Commands must go through `srun`: run directly in an `salloc` shell they land in
-  Slurm's extern step, with a minimal (often single-CPU) cpuset.
+  Slurm's extern step, with a minimal (often single-CPU) cpuset. `--cpu-bind=none`
+  matters: with Slurm's default binding the instance only gets cores 10-63 of each
+  node, and multi-node RMG runs ~25% slower (see step 5).
 - The initial program prints `flux resource list` (expect N nodes, 56N cores, 8N
   GPUs) and then runs `run_pipeline.py` with `PYTHONPATH` set to your checkouts —
   scoped to that one command rather than the whole container.
@@ -187,13 +189,16 @@ srun -N <nodes> -n <nodes> --external-launcher --gpu-bind=closest --mpi=pmi2 \
 
 Key knobs:
 
-- `converge_dft_data.gpus_per_node` / `cores_per_task` / `max_tasks_per_job` — RMG
-  runs one MPI rank per GPU (8 per node). Flux offers 56 × N − 1 cores on N nodes
-  (one stays with the broker; check `Free_cores=` in `matensemble_workflow.log`), so
-  8 ranks × 7 cores can't fill every node of the allocation — use `cores_per_task: 6`
-  (and `rmg_num_threads` ≤ 6) when one RMG job needs the whole allocation, e.g. any
-  1-node run. `max_tasks_per_job: 8` currently caps every RMG job at one node — see
-  `INVESTIGATION_NOTES.md` for the multi-node work.
+- `converge_dft_data.max_tasks_per_job` — RMG runs one MPI rank per GPU, 8 per
+  node, so this caps the GPUs (and `ceil(ranks / 8)` nodes) any one RMG job may use;
+  pyRMG's own estimate is clamped to it. **RMG jobs span nodes** (16 = 2 nodes in the
+  default config); keep it within your allocation. Measured: a 25-atom Bi-Se single
+  point converges in 269 s on 1 node and 173 s on 2, with energies agreeing to 1e-6
+  eV; a 99-atom cell needs at least 2 nodes (on 1 it runs out of GPU memory).
+- `converge_dft_data.cores_per_task: 7` (+ `controller_cores: 0`) — one whole
+  7-core L3 group per rank, the layout native `srun` uses; `rmg_dft.py` then gives
+  each rank the GCD closest to its cores. Other values straddle L3/NUMA groups and
+  run ~25% slower (or put two ranks on one GCD).
 - `fine_tuning.num_tasks` / `MD_*.num_tasks` — these stages are single-task/single-GPU
   by design; only RMG is multi-GPU.
 
@@ -325,10 +330,19 @@ editing.
   controlled A/B, to be an actual regression here.
 - **RMG's `command` is a bare `{rmg_executable} {rmg_name}`** — no `srun`/`mpirun`/
   `flux run` wrapper. Flux owns launch semantics for every chore.
-- **`Resources(mpi=...)` for the RMG chore is `False` for now.** `mpi=True` was once
-  tried and rejected while chasing the HSA errors above — which turned out to be the
-  solver, so that rejection may have been for the wrong reason; it's being re-tested
-  (`INVESTIGATION_NOTES.md`). `set_gpu_affinity` stays unset for RMG chores.
+- **Multi-node RMG in the container needs three settings** (all in place;
+  `INVESTIGATION_NOTES.md` Phase 2 has the evidence):
+  - `MPICH_OFI_NIC_POLICY=BLOCK`, not `NUMA` — under Flux the ranks aren't confined
+    to one NUMA domain, and Cray MPICH aborts `MPI_Init` on >1 node (`Unable to use
+    a NIC_POLICY of 'NUMA'. Rank N is not confined to a single NUMA node`).
+  - `FI_HMEM=system` — otherwise libfabric initialises ROCm GPU-memory support during
+    an inter-node `MPI_Init`, after which HIP finds **no GPUs** (`hsa_init:
+    HSA_STATUS_ERROR_OUT_OF_RESOURCES`) and `rmg-gpu` hangs at startup with an empty
+    log. RMG uses host-buffer MPI, so nothing is lost. (Alternative:
+    `mpi_tests/libhip_preinit.so` via `LD_PRELOAD`, which initialises HIP first.)
+  - Speed: brokers with `--cpu-bind=none`, `cores_per_task: 7`, closest GCD per rank.
+  `Resources(mpi=False)` is correct: Flux wires every task to its PMI and puts its own
+  `libpmi` first, so the ranks join one job (one banner, `16 MPI processes/image`).
 - **`max_tasks_per_job` clamping uses ceiling, not floor, division** when computing a
   fallback node count — floor division can produce `Resources(num_tasks=0, ...)`.
 - **A stray second `model.model` under `fine_tuning.run_directory` causes unwanted
