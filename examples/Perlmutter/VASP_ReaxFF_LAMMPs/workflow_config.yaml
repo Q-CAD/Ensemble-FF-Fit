@@ -41,14 +41,17 @@ generation_number: 0
 # backend's own driver/recipe -- see run_pipeline.py's module docstring for
 # why this stays VASP-specific rather than a generic abstraction.
 # vdW_single_point.yml now points at vasp/6.4.2-gpu (confirmed faster than
-# the CPU build) -- gpus_per_task/max_tasks_per_job below match that:
-# max_tasks_per_job=4 caps every job at one Perlmutter GPU node's worth of
-# A100s (4), regardless of what the cores_per_task-based num_tasks formula
-# below would otherwise compute, avoiding "not enough resources for the
-# current job" until multi-node GPU sizing is worked out. UNVERIFIED
-# against a real Flux-dispatched allocation -- see vasp_dft.py/
-# run_pipeline.py's docstrings; re-check cores_per_task/max_tasks_per_job
-# the first time a real VASP chore runs through Flux.
+# the CPU build), sized as one MPI rank per GPU: each job gets nodes x
+# ranks_per_node ranks, where nodes is the recipe's `nodes` pin, else
+# ceil(n_atoms / atoms_per_node), capped at max_nodes_per_job (4 = NERSC's
+# recommended VASP maximum). Replaces the old max_tasks_per_job=4 cap
+# (2026-10; this sizing was confirmed on 1- and 2-node jobs in
+# examples/Perlmutter/VASP_MACE_ASE). Core budget: Flux offers 64 x N - 1
+# cores on an N-node allocation (one stays with the broker), so 4 ranks x
+# 16 cores fill a node -- fine while a job leaves at least one node of the
+# allocation free (this file's launch_multi_node.slurm requests 4), but a
+# job spanning EVERY node (e.g. on a 1-node allocation) needs
+# cores_per_task: 15.
 converge_dft_data:
   directory: DFT
   dft_task: DFT/vasp_dft.py
@@ -59,8 +62,9 @@ converge_dft_data:
   finished_file: properties.json
   cores_per_task: 16
   gpus_per_task: 1
+  ranks_per_node: 4
   atoms_per_node: 100
-  max_tasks_per_job: 4
+  max_nodes_per_job: 4
 
 # Stage: parse2fit_generation. Runs parse2fit's own input-generation step
 # in-process (ReadWriteFactory(...).get_writer().write_input_files()) --

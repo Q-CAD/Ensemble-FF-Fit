@@ -1,0 +1,17 @@
+{
+    "high_temperature": [
+        500,
+        1000,
+        4
+    ],
+    "low_temperature": 300,
+    "nsteps": 100,
+    "frequency": 10,
+    "friction": 0.05,
+    "timestep": 0.5,
+    "fmax": 0.05,
+    "optsteps": 20,
+    "cycles": 1,
+    "defect_prob": 0.75,
+    "max_energy_deviation_per_atom": 5.0
+}

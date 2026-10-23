@@ -1,0 +1,55 @@
+FROM docker.io/nersc/flux:26.05
+
+# Same base/MatEnsemble install as examples/Perlmutter/VASP_ReaxFF_LAMMPs/
+# Dockerfile.ff-fit, minus JAX-ReaxFF/parse2fit, plus the MACE stack this
+# pipeline's fitting/MD chores need. VASP itself is NOT in the image -- it's
+# the host's NERSC vasp module, bind-mounted in by launch_multi_node.slurm.
+# Ensemble-FF-Fit itself isn't installed here either: launch_multi_node.slurm
+# puts the repo checkout on PYTHONPATH, so only its dependencies are baked in.
+#
+# Everything is installed at build time, never live inside a running
+# container: /opt/basic/lib/python3.12/site-packages lives inside the
+# image, so a `pip install` done in one ephemeral `podman-hpc run --rm`
+# container is invisible to every other chore's container.
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV PATH=/opt/basic/bin:$PATH
+
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-dev libglu1-mesa-dev mesa-utils
+
+# clone MatEnsemble
+WORKDIR /opt
+RUN git clone --depth 1 https://github.com/Q-CAD/MatEnsemble.git matensemble && \
+    cd matensemble && \
+    uv export --format requirements.txt --no-hashes --no-emit-project --output-file requirements.txt && \
+    /opt/basic/bin/python -m pip install -r requirements.txt && \
+    /opt/basic/bin/python -m pip install --no-deps .
+
+# CUDA torch before mace-torch, so pip never resolves a different torch
+# build for it. NOTE (confirmed in a real build, 2026-10-22): MatEnsemble's
+# own requirements above already install torch==2.11.0+cu128 from PyPI, so
+# this cu126 line ends up a no-op for torch itself -- the image runs
+# torch 2.11.0+cu128 (CUDA 12.8, fine with Perlmutter's driver). The pin is
+# kept so the torch version still fails loudly here if MatEnsemble's
+# requirements ever stop providing a compatible build.
+RUN /opt/basic/bin/python -m pip install \
+    torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
+    --index-url https://download.pytorch.org/whl/cu126
+
+# Ensemble-FF-Fit's core dependencies (pyproject.toml's `dependencies`,
+# minus matensemble above) + its `mace` and `cuda` extras. mace-torch is
+# pinned explicitly: MatEnsemble's requirements bring in 0.3.14, which has
+# no --freeze option (added in 0.3.15) -- workflow_config.yaml's
+# mace_overrides.freeze would then fail at fit time.
+RUN /opt/basic/bin/python -m pip install \
+    pymatgen pymatgen-analysis-defects mp-api ase numpy scipy matminer \
+    scikit-learn pyarrow tqdm pyyaml \
+    mace-torch==0.3.16 \
+    "cuequivariance>0.6.0" "cuequivariance-torch>0.6.0" "cuequivariance-ops-torch-cu12>0.6.0"
+
+# Fail the build (not the first chore) if torch got replaced by a CPU/other
+# build along the way, MACE can't import, or MACE lacks --freeze.
+RUN /opt/basic/bin/python -c "import torch, mace, cuequivariance_torch; assert torch.version.cuda, torch.__version__; print(torch.__version__, torch.version.cuda)" && \
+    /opt/basic/bin/python -c "from mace.tools import build_default_arg_parser as p; assert p().parse_args(['--name', 'x', '--freeze', '6']).freeze == 6"

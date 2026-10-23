@@ -394,18 +394,24 @@ def run_converge_dft_data(config):
     of build_full_runs' nested loop, it produces an N^2 cross-product
     instead of N.
 
-    gpus_per_task (config key, default 1 -- matching every other GPU-facing
-    stage's own default in this file, e.g. fine_tuning/MD_single_points)
-    flows straight into both the chore registration and each per-job
-    Resources() below, the same way cores_per_task already does. num_tasks
-    itself is still sized from allocated_nodes*cores_per_task (one MPI rank
-    per unit of cores_per_task, NOT one rank per GPU) -- this is UNVERIFIED
-    against a real Flux-dispatched allocation (only confirmed as a raw,
-    single-rank executable so far, see vasp_dft.py's docstring); rely on
-    max_tasks_per_job (workflow_config.yaml, currently 4 to match one GPU
-    node's worth of A100s) to cap this at something sane regardless of
-    what cores_per_task computes, and re-check the whole split the first
-    time a real Flux-submitted VASP chore actually runs.
+    Sizing (GPU VASP): one MPI rank per GPU, so num_tasks = nodes *
+    ranks_per_node (default 4, one per Perlmutter A100), each rank with
+    gpus_per_task=1 and cores_per_task OpenMP threads. `nodes` is
+    vasp_resource_estimator's per-structure estimate (the recipe's `nodes`
+    pin, else ceil(n_atoms / atoms_per_node)), capped at max_nodes_per_job
+    (default 4, NERSC's recommended maximum for VASP). Flux places at most 4
+    of these ranks per node (4 GPUs), so a multi-node job spans exactly
+    `nodes` nodes. CHANGED (2026-10, ported from VASP_MACE_ASE, where it was
+    confirmed on 1- and 2-node jobs): this used to size num_tasks =
+    allocated_nodes * cores_per_task (one rank per CPU core, 1 GPU each --
+    e.g. 32 GPUs for a 2-node job, which could never fit), hidden behind
+    max_tasks_per_job=4.
+
+    Core budget: MatEnsemble/Flux offers 64 * N - 1 cores on an N-node
+    allocation (one core stays with the broker). ranks_per_node *
+    cores_per_task = 64 fills a whole node, so a job that needs every node
+    of the allocation won't fit at 16 cores per rank -- use 15 there, or
+    leave one node of headroom.
     """
     from matensemble.pipeline import Pipeline
     from matensemble.model import Resources
@@ -431,7 +437,8 @@ def run_converge_dft_data(config):
     # requesting 0 GPUs here would be the unusual case, not the norm.
     gpus_per_task = dft_cfg.get('gpus_per_task', 1)
     atoms_per_node = dft_cfg.get('atoms_per_node', 100)
-    max_tasks_per_job = dft_cfg.get('max_tasks_per_job')
+    ranks_per_node = dft_cfg.get('ranks_per_node', 4)
+    max_nodes_per_job = dft_cfg.get('max_nodes_per_job', 4)
 
     options = {
         'structure_filename': structure_filename,
@@ -512,12 +519,8 @@ def run_converge_dft_data(config):
     # Flux each rank only needed 1 core while VASP actually tried to use
     # 16, a 64x undercount for this job's real CPU footprint (4 ranks x 16
     # threads = 64, the whole node, not coincidentally, since NPAR=16 in
-    # vdW_single_point.yml already assumes exactly this split). FRAGILE:
-    # this only stays correct because cores_per_task (16) x
-    # max_tasks_per_job (4, workflow_config.yaml) == 64 (this node type's
-    # physical core count) -- nothing derives one from the other
-    # automatically, so changing max_tasks_per_job without also adjusting
-    # cores_per_task (or vice versa) would silently reintroduce a mismatch.
+    # vdW_single_point.yml already assumes exactly this split). See this
+    # function's docstring for the per-node core budget.
     @pipe.chore(name="run_vasp", num_tasks=1, cores_per_task=cores_per_task, gpus_per_task=gpus_per_task,
                 env=env, inherit_env=True, mpi=True)
     def run_vasp_chore(task_dict):
@@ -531,26 +534,18 @@ def run_converge_dft_data(config):
         # 'allocated_nodes' may get overridden below, per-iteration.
         task_dict = dict(dft_dct)
 
-        # Sized per-job from this task's own computed allocated_nodes, not a
-        # single global value -- different structures/recipes can legitimately
-        # need different node counts, and each pipe.call carries its own
-        # Resources override for exactly this reason. One MPI rank per core
-        # (the common CPU-VASP decomposition) -- UNVERIFIED, see this
-        # function's docstring.
-        num_tasks = dft_dct['allocated_nodes'] * cores_per_task
-        if max_tasks_per_job is not None and num_tasks > max_tasks_per_job:
-            # Same ceiling-division clamp as the RMG precedent (floor gave 0
-            # whenever max_tasks_per_job < cores_per_task, an actual bug:
-            # Resources(num_tasks=0, ...) is invalid).
-            clamped_num_tasks = max_tasks_per_job
-            clamped_allocated_nodes = max(1, -(-clamped_num_tasks // cores_per_task))  # ceil division
-            print(f"WARNING: {task_dict['structure_filename']}: auto-computed "
-                  f"allocated_nodes*cores_per_task = {num_tasks} tasks exceeds "
-                  f"max_tasks_per_job={max_tasks_per_job}; falling back to {clamped_num_tasks} "
-                  f"task(s) ({clamped_allocated_nodes} node(s) worth) instead of the auto-computed value.",
-                  file=sys.stderr)
-            num_tasks = clamped_num_tasks
-            task_dict['allocated_nodes'] = clamped_allocated_nodes
+        # Sized per-job from this structure's own node estimate -- different
+        # structures can legitimately need different node counts, and each
+        # pipe.call carries its own Resources for exactly this reason.
+        nodes = dft_dct['allocated_nodes']
+        if max_nodes_per_job is not None and nodes > max_nodes_per_job:
+            print(f"WARNING: {task_dict['structure_filename']}: estimated {nodes} node(s) exceeds "
+                  f"max_nodes_per_job={max_nodes_per_job}; running on {max_nodes_per_job}.", file=sys.stderr)
+            nodes = max_nodes_per_job
+            task_dict['allocated_nodes'] = nodes
+        num_tasks = nodes * ranks_per_node
+        print(f"converge_dft_data: {task_dict['working_directory']}: {nodes} node(s), {num_tasks} MPI rank(s) "
+              f"x {cores_per_task} core(s) x {gpus_per_task} GPU(s)")
         resources = Resources(num_tasks=num_tasks, cores_per_task=cores_per_task, gpus_per_task=gpus_per_task,
                                env=env, inherit_env=True, mpi=True)
         pipe.call("run_vasp", task_dict, resources=resources)

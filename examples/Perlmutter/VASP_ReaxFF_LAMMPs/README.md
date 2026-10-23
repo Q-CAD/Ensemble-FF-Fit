@@ -433,6 +433,17 @@ comparing raw parsed forces directly.
 
 ## 7. Pitfalls encountered getting this working (read before deviating)
 
+- **VASP jobs are sized one MPI rank per GPU** (`converge_dft_data.ranks_per_node: 4`),
+  `nodes × ranks_per_node` ranks per job, with `nodes` from `DFT/vdW_single_point.yml`'s
+  `nodes:` pin (0 = `ceil(n_atoms / atoms_per_node)`) capped at `max_nodes_per_job: 4`.
+  This replaced (2026-10) a one-rank-per-core formula that could never fit on more
+  than one node and was hidden behind `max_tasks_per_job: 4`; the new sizing was
+  confirmed on 1- and 2-node jobs in `examples/Perlmutter/VASP_MACE_ASE` (2 nodes: 8
+  ranks, identical energy to the 1-node run). Flux offers 64 × N − 1 cores on N nodes
+  (one stays with the broker), so with `cores_per_task: 16` a VASP job must leave at
+  least one node of the allocation free; use 15 for a job spanning every node (e.g. any
+  1-node allocation). Note this example's DFT data was mostly copied from earlier runs,
+  so `converge_dft_data` itself has only been exercised on a few calculations here.
 - **`pair_style reaxff` on Kokkos GPU needs `newton on` + an explicit neighbor-list
   override, not Kokkos's own GPU default.** Kokkos's default for a GPU backend is
   `neigh full` + `newton off`; ReaxFF's Kokkos implementation
