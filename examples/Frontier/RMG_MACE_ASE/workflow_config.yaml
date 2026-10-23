@@ -22,7 +22,7 @@ converge_dft_data:
   structure_filename: POSCAR
   rmg_yaml_name: vdW_quench.yml
   entry_point: run_rmg_calculation
-  check_files: [rmg_yaml]
+  check_files: [dft_recipe]
   finished_file: properties.json
   gpus_per_node: 8
   gpus_per_task: 1

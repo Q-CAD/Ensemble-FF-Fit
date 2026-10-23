@@ -119,7 +119,7 @@ def run_converge_dft_data(config):
 
     `directory` serves as both run_directory and inputs_directory for
     DFTMatEnsemble. build_full_runs anchors its task_dir computation on
-    whatever check_files points at (default "rmg_yaml") -- safe whether
+    whatever check_files points at (default "dft_recipe") -- safe whether
     directory is a single structure leaf or a parent tree spanning multiple
     structures against one shared recipe, since either way exactly one
     recipe file is expected in the tree. Don't override check_files to
@@ -140,16 +140,19 @@ def run_converge_dft_data(config):
     structure_filename = dft_cfg.get('structure_filename', 'CONTCAR')
     rmg_yaml_name = dft_cfg.get('rmg_yaml_name', 'vdW_quench.yml')
     entry_point = dft_cfg.get('entry_point', 'run_rmg_calculation')
-    check_files = dft_cfg.get('check_files', ['rmg_yaml'])
+    check_files = dft_cfg.get('check_files', ['dft_recipe'])
     finished_file = dft_cfg.get('finished_file')
     gpus_per_node = dft_cfg.get('gpus_per_node', 8)
     cores_per_task = dft_cfg.get('cores_per_task', 7)
     rmg_num_threads = dft_cfg.get('rmg_num_threads', 5)
     max_tasks_per_job = dft_cfg.get('max_tasks_per_job')
 
+    # 'dft_recipe' is DFTMatEnsemble's generic recipe-file key (renamed from
+    # 'rmg_yaml' in Ensemble-FF-Fit 21677e0) -- build_dft_dcts requires it and
+    # run_individual hands task_dict['dft_recipe'] to rmg_dft.py.
     options = {
         'structure_filename': structure_filename,
-        'rmg_yaml': rmg_yaml_name,
+        'dft_recipe': rmg_yaml_name,
         'gpus_per_node': gpus_per_node,
     }
 
@@ -162,7 +165,7 @@ def run_converge_dft_data(config):
         # runs in build_dft_dcts' own loop over whatever survives finished_file
         # filtering. Re-running the cheap half unfiltered here, purely to give a
         # precise error, doesn't meaningfully duplicate the expensive work above.
-        recipe_keys, structure_keys = ['rmg_yaml'], ['structure_filename']
+        recipe_keys, structure_keys = ['dft_recipe'], ['structure_filename']
         labels = check_files + structure_keys + recipe_keys
         _, raw_task_dirs = dft.build_full_runs(
             root0=dft.run_directory, files0=[dft.options[c] for c in check_files],
