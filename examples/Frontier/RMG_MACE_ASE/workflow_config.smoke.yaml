@@ -6,7 +6,9 @@
 #   converge_dft_data.cores_per_task        7    -> 6  (8 x 7 = 56 > the 55 Flux offers on 1 node)
 #   sample_ft_md_structures.total           20   -> 4
 #   build_ff_inputs.total_cap               100  -> 3
-#   build_ff_inputs.mace_overrides          + max_num_epochs: 2
+#   build_ff_inputs.mace_overrides          + max_num_epochs: 2, batch_size/valid_batch_size: 2
+#                                           (default 10 > the ~5 training configs per member here:
+#                                           an empty loader, failing as torch.cat() on an empty list)
 #   finite_temperature_md.in_file           in.mace.json -> in.mace.smoke.json (100 steps, 1 cycle)
 #   downselect_force_fields.number_to_copy  25   -> 2
 #   dft_candidate_selection.total           80   -> 2
@@ -107,6 +109,8 @@ build_ff_inputs:
   mace_overrides:
     freeze: 6
     max_num_epochs: 2
+    batch_size: 2
+    valid_batch_size: 2
 
 # Stage: fit_and_validate. Covers this section plus validation_mirroring,
 # copy_force_fields, MD_single_points, and finite_temperature_md below (all

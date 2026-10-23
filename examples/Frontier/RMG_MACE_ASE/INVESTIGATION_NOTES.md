@@ -85,6 +85,47 @@ Branch: `frontier-rmg-update` (off `efffit_2`). Slurm account: `mat201`
   `.pth` for the complete one. (The old sandbox had the same split and
   worked, presumably because `flux start` prepends its own python dir to
   the initial program's PYTHONPATH -- the build check runs outside Flux.)
+- **Env check** (5744507, 1 node, 19 s): `flux resource list` = 1 node /
+  56 cores / 8 GPUs (live hwloc discovery, no static R.json needed); derived
+  image imports MatEnsemble 0.5.8, `flux.resource`, torch ROCm (8 devices),
+  pyRMG and EnsembleFFFit from the launcher's PYTHONPATH; the
+  `/usr/lib64 -> /opt/cray_extra/lib64` bind works on the read-only .sif.
+  A plain `flux run -n8 -c6 -g1` (no affinity options) gives every task
+  `CUDA_VISIBLE_DEVICES=0-7`, `ROCR_VISIBLE_DEVICES` unset, and the job's
+  whole cpuset -- relevant for Phase 2's rank/GPU mapping.
+- **Smoke run 1** (5744559, `--stage all`, smoke config): 10 of 12 RMG
+  single points (Quench Electrons, davidson, 8 ranks / 8 GPUs, 6 cores
+  each) converged in 41-66 s total, ~1.9 s per SCF step -- vs 37 s /
+  1.6 s per step for the same BiSe vacancy0 in the old
+  `MatEnsemble2/test/Consolidated_Pipeline` run. No slow-SCF regression.
+  pyRMG's estimator wanted 40 ranks (5 nodes) even for these 11-12 atom
+  cells (144 for volume_1.15); `max_tasks_per_job: 8` clamped all to 1 node.
+- **Isolated Bi does not converge with davidson** (known case -- it was
+  only ever converged with multigrid, outside the container). After 64 SCF
+  steps the total energy swung between -77.6 and -80.5 Ha and twice reset
+  to -77.632. Killed (`pkill` of the `rmg-gpu` processes on the node; the
+  chore exited rc=1 and MatEnsemble moved on, no retry) and substituted the
+  converged multigrid run from
+  `MatEnsemble2/test/Full_Pipeline/run/DFT/isolated_elements/Bi` (same input
+  apart from the solver and a 0.0013% larger box; E = -2112.4774 eV).
+  The killed run's log/input are kept in `.../Bi/davidson_smoke1_killed/`.
+  Implication: a fresh full run can't produce the Bi E0 with the current
+  recipe -- either ship a converged Bi E0, use a per-structure recipe
+  override for isolated atoms, or get multigrid working (Phase 2).
+- Smoke run 1, rest of the loop: `sample_ft_md_structures` and
+  `build_ff_inputs` fine (E0s: Bi -2112.4774 eV from the substituted run,
+  Se -256.1982 eV). In `fit_and_validate` the 4 FT-MD chores finished, but
+  all 3 MACE fits failed: `Batch size (10) is larger than the number of
+  training data (5)`, surfacing as `torch.cat(): expected a non-empty list
+  of Tensors` in `compute_avg_num_neighbors`. Smoke-only fix:
+  `batch_size`/`valid_batch_size: 2` in `mace_overrides`. `downselect`'s new
+  empty-tree check then stopped the run with its clear error, as intended.
+  openequivariance JIT-builds its HIP extension on first use (no
+  precompiled HIP build; torch < 2.10) into `~/.cache/torch_extensions/
+  py312_cpu/libtorch_tp_jit` -- took ~20 s, shared across chores.
+- Python's stdout was block-buffered into the Slurm file, so "Stage:"
+  lines appeared only at exit; `launch_flux.slurm` now sets
+  `PYTHONUNBUFFERED=1`.
 
 ## Phase 2: multi-node RMG
 

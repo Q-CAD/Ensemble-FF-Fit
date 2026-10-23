@@ -33,8 +33,9 @@ set -euo pipefail
 SIF="${SIF:-/lustre/orion/mat201/scratch/rjmorelock/MatEnsemble_Update/images/matensemble-frontier-v0.5.8-ensemblefffit.sif}"
 ENSEMBLE_FF_FIT="${ENSEMBLE_FF_FIT:-/lustre/orion/mat201/scratch/rjmorelock/MatEnsemble_Update/Ensemble-FF-Fit}"
 PYRMG="${PYRMG:-/lustre/orion/mat201/scratch/rjmorelock/MatEnsemble2/pyrmg}"
-# Extra Python packages installed alongside the image (README.md step 1c),
-# if any -- prepended to PYTHONPATH when the directory exists.
+# Optional `pip install --target` directory of extra Python packages, for
+# trying one out before adding it to the derived image (README.md step 1c)
+# -- prepended to PYTHONPATH when set.
 EXTRA_SITE_PACKAGES="${EXTRA_SITE_PACKAGES:-}"
 CONFIG="${CONFIG:-workflow_config.yaml}"
 STAGE="${STAGE:-all}"
@@ -49,7 +50,10 @@ fi
 # Scoped to the pipeline process with `env` rather than set for the whole
 # container, so the Flux brokers' own startup never sees it (on Perlmutter
 # a container-wide PYTHONPATH broke flux's rc1 bootstrap).
-FLUX_CMD="${FLUX_CMD:-env PYTHONPATH=${PYTHONPATH_IN} python run_pipeline.py --config ${CONFIG} --stage ${STAGE}}"
+# PYTHONUNBUFFERED: otherwise the pipeline's own progress lines ("Stage:
+# ...", per-run warnings) sit in Python's buffer and don't reach the Slurm
+# output file until the stage, or the job, ends.
+FLUX_CMD="${FLUX_CMD:-env PYTHONPATH=${PYTHONPATH_IN} PYTHONUNBUFFERED=1 python run_pipeline.py --config ${CONFIG} --stage ${STAGE}}"
 
 # Host paths for the natively built rmg-gpu (Cray MPICH/libfabric/PALS,
 # Spack boost/bzip2, libcxi/libnl from /usr/lib64). /lustre/orion and
