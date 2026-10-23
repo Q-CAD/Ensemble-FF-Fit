@@ -65,7 +65,11 @@ fully worked out.
 See `CLAUDE.md` for more on the project's architecture, and `TODO.md` for what's still open. Full worked
 examples, one per backend/HPC-system combination:
 
-- `examples/Frontier/RMG_MACE_ASE/README.md` -- RMG DFT -> MACE fitting -> ASE MD, on OLCF Frontier.
+- `examples/Frontier/RMG_MACE_ASE/README.md` -- RMG DFT -> MACE fitting -> ASE MD, on OLCF Frontier
+  (multi-node RMG inside the Apptainer container).
+- `examples/Frontier/VASP/README.md` -- GPU VASP DFT chores on OLCF Frontier (single- and multi-node).
+- `examples/Perlmutter/VASP_MACE_ASE/README.md` -- VASP DFT -> MACE fitting -> ASE MD, on NERSC
+  Perlmutter.
 - `examples/Perlmutter/VASP_ReaxFF_LAMMPs/README.md` -- VASP DFT -> JAX-ReaxFF fitting -> LAMMPS MD, on
   NERSC Perlmutter.
 - `examples/HPC_aas/QE_ACE/README.md` -- Quantum Espresso DFT -> pyACE fitting -> CPU-only single-point

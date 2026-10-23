@@ -1,0 +1,28 @@
+# Config for run_pipeline.py (Frontier VASP). One stage:
+#
+#   python run_pipeline.py --config workflow_config.yaml --stage converge_dft_data
+#
+# Runs VASP on every POSCAR under `directory` without a properties.json, one
+# chore per structure, sized from its own node estimate (the recipe's
+# `nodes` pin, else ceil(n_atoms / atoms_per_node)).
+converge_dft_data:
+  directory: DFT
+  dft_task: DFT/vasp_dft.py
+  structure_filename: POSCAR
+  vasp_yaml_name: vdW_single_point.yml
+  entry_point: run_vasp_calculation
+  check_files: [dft_recipe]
+  finished_file: properties.json
+  # One MPI rank per GCD (8 per Frontier node), each on one whole 7-core L3
+  # group; vasp_dft.py gives each rank its closest GCD. controller_cores 0
+  # lets 8 x 7 fill a 1-node instance.
+  ranks_per_node: 8
+  cores_per_task: 7
+  omp_num_threads: 1
+  gpus_per_task: 1
+  controller_cores: 0
+  # MPICH_GPU_SUPPORT_ENABLED for vasp_std (device buffers straight to MPI).
+  gpu_aware_mpi: true
+  atoms_per_node: 100
+  # Largest node count one VASP job may use; keep within the allocation.
+  max_nodes_per_job: 4

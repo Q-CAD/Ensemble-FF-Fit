@@ -1,0 +1,46 @@
+# VASP recipe for DFT/vasp_dft.py on Frontier -- the Perlmutter
+# VASP_MACE_ASE recipe (same pymatgen input set and INCAR/KPOINTS settings,
+# so results stay comparable), with Frontier's executable and POTCARs.
+
+# OLCF's vasp/6.6.1-gpu build (`module show vasp/6.6.1-gpu`). Launched bare
+# -- Flux owns the launch; run_pipeline.py's VASP_LD_LIBRARY_PATH supplies
+# its host libraries inside the container. Unlike Perlmutter, no host
+# ld-linux loader is needed: the container's glibc is newer than the host's.
+vasp_executable: "/sw/frontier/vasp/6.6.1/bin/vasp_std"
+command: "/sw/frontier/vasp/6.6.1/bin/vasp_std"
+
+structure_filename: "POSCAR"
+
+# pymatgen-layout POTCAR directory. Frontier's POTCARs
+# (/sw/frontier/vasp/potentials/PBE/<symbol>/POTCAR, VASP's PBE.54 set) need
+# only a directory with a POTPAW_PBE_54 symlink to them -- README.md step 2.
+pseudopotentials_directory: "/path/to/vasp_pseudos"
+potcar_functional: "PBE_54_W_HASH"
+band_multiplier: 0.6
+
+# pymatgen.io.vasp.sets.VaspInputSet subclass, resolved by name in
+# vasp_dft.py (default MPRelaxSet).
+input_set: "MPRelaxSet"
+
+# nodes: 0 -> run_pipeline.py's vasp_resource_estimator estimates
+# ceil(n_atoms / atoms_per_node); a positive value pins the node count.
+nodes: 0
+atoms_per_node: 100
+
+# MPRelaxSet + IVDW=12, static (NSW=0) -- the Perlmutter Pd-Se example's
+# settings. NPAR is reset by VASP's GPU build (one band group per rank).
+user_incar_settings:
+  ALGO: Normal
+  EDIFF: 1.0e-05
+  EDIFFG: -0.01
+  ISIF: 2
+  NPAR: 16
+  KPAR: 4
+  ISMEAR: 0
+  SIGMA: 0.03
+  IVDW: 12
+  NSW: 0
+  SYMPREC: 1.0e-06
+  NELM: 100
+user_kpoints_settings:
+  grid_density: 1000

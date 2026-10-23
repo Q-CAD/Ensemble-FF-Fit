@@ -63,7 +63,7 @@ import inspect
 assert "reserve_broker_node" in inspect.signature(matensemble.pipeline.Pipeline).parameters
 from mace.tools import build_default_arg_parser as p
 assert p().parse_args(["--name", "x", "--freeze", "6"]).freeze == 6, "mace-torch lacks --freeze"
-import pymatgen.core, pymatgen.analysis.defects, ase, yaml, sklearn, matminer
+import pymatgen.core, pymatgen.analysis.defects, pymatgen.io.vasp.sets, pymatgen.io.vasp.outputs, ase, yaml, sklearn, matminer
 print("derived image OK: torch", torch.__version__, "mace", mace.__version__,
       "matensemble", md.version("matensemble"))
 PY
