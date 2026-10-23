@@ -214,7 +214,7 @@ def run_finite_temperature_md(ff_list, struct_list, output_list, in_file_list):
         with open(inp) as fh:
             cfg = json.load(fh)
         init_conf = read(struct)
-        #init_conf = balanced_supercell(init_conf, max_atoms=100)
+        init_conf = balanced_supercell(init_conf, max_atoms=100)
         init_conf.set_calculator(calculator)
 
         # 2) Initialize the calculation

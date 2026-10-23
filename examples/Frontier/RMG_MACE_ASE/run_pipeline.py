@@ -21,6 +21,17 @@ file-ops and can run anywhere EnsembleFFFit's analysis extras are installed)
     python run_pipeline.py --config workflow_config.yaml --stage select_dft_candidates
     python run_pipeline.py --config workflow_config.yaml --stage all
 
+The next loop is another --stage all after bumping workflow_config.yaml's
+"# GEN"-tagged keys: its converge_dft_data stage runs RMG on the POSCARs
+the previous loop's select_dft_candidates wrote under DFT/uq/<n> (every
+already-converged directory is skipped via finished_file), and
+build_ff_inputs.extra_training_subpaths folds those results into training.
+Rerunning --stage all after a walltime limit resumes: finished RMG runs,
+fits, MD runs and single points are skipped, not redone.
+
+Every Pipeline here uses reserve_broker_node=False (no node is set aside
+for just the Flux broker) -- the Perlmutter VASP_MACE_ASE convention.
+
 matensemble is only imported inside the three stage functions that actually
 need it (converge_dft_data, fit_and_validate, uq_single_points), not at
 module load time, so the other four stages don't require the Flux container.
@@ -35,6 +46,7 @@ a different DFT driver, same reasoning as why the MACE/ASE drivers stay
 user-owned rather than canonicalized.
 """
 import argparse
+import glob
 import os
 import random
 import re
@@ -96,7 +108,25 @@ def rmg_container_env(cores_per_task, rmg_num_threads):
     }
 
 
+def _with_defaults(cfg, defaults):
+    """
+    Copy of `cfg` with every key in `defaults` that is missing or null in
+    `cfg` filled from `defaults` -- lets downstream path keys (e.g.
+    downselect_force_fields.force_fields_dir) default to the upstream key
+    that produces them (copy_force_fields.target_directory), so moving to
+    the next generation only means editing the upstream "# GEN" keys in
+    workflow_config.yaml, not every copy of each path.
+    """
+    cfg = dict(cfg or {})
+    for key, value in defaults.items():
+        if cfg.get(key) is None:
+            cfg[key] = value
+    return cfg
+
+
 def _require(cfg, stage_name, keys):
+    if cfg is None:
+        raise ValueError(f"Missing required section '{stage_name}' in the config file.")
     missing = [k for k in keys if cfg.get(k) is None]
     if missing:
         raise ValueError(f"Missing required key(s) {missing} under '{stage_name}' in the config file.")
@@ -175,17 +205,19 @@ def run_converge_dft_data(config):
             run_directory=dft.run_directory, inputs_directory=dft.inputs_directory,
         )
         if raw_task_dirs and finished_file is not None:
-            sample = raw_task_dirs[:3]
-            raise ValueError(
-                f"Found {len(raw_task_dirs)} (structure, rmg_yaml) pair(s) under {directory}, but every "
-                f"one of them already has a '{finished_file}' match in its working directory -- there's "
-                f"nothing new to run. Sample working director{'y' if len(sample) == 1 else 'ies'}: "
-                f"{sample}{', ...' if len(raw_task_dirs) > 3 else ''}. Set finished_file to null (or a "
-                f"pattern that doesn't already exist everywhere) to rerun them anyway."
-            )
+            # Every pair already converged -- a resumed run, or a later
+            # generation whose new candidates are all done: a no-op, not an
+            # error (this used to raise, which made every --stage all rerun
+            # crash at its first stage). Still raised below when nothing is
+            # found at all, e.g. a misconfigured directory.
+            print(f"converge_dft_data: all {len(raw_task_dirs)} (structure, rmg_yaml) pair(s) under "
+                  f"{directory} already have a '{finished_file}' match -- nothing new to run, skipping. "
+                  f"Set finished_file to null (or a pattern that doesn't already exist everywhere) to "
+                  f"force a rerun.")
+            return
         raise ValueError(f"No (structure, rmg_yaml) pairs found under {directory}")
 
-    pipe = Pipeline()
+    pipe = Pipeline(reserve_broker_node=False)
     env = rmg_container_env(cores_per_task, rmg_num_threads)
 
     @pipe.chore(name="run_rmg", num_tasks=1, cores_per_task=cores_per_task, gpus_per_task=1,
@@ -228,6 +260,8 @@ def run_converge_dft_data(config):
                   file=sys.stderr)
             num_tasks = clamped_num_tasks
             task_dict['allocated_nodes'] = clamped_allocated_nodes
+        print(f"converge_dft_data: {task_dict['working_directory']}: {task_dict['allocated_nodes']} node(s), "
+              f"{num_tasks} MPI rank(s) x {cores_per_task} core(s) x 1 GPU")
         # mpi=False (Flux's default -- no "mpi"="pmi2" shell option) deliberately
         # matches the confirmed-working manual invocation: `flux run --ntasks=8
         # --cores-per-task=7 --gpus-per-task=1 ... rmg-gpu` run directly inside a
@@ -256,6 +290,22 @@ def run_converge_dft_data(config):
     # baseline, dropped here while isolating the real failure cause.
     future = pipe.submit(log_delay=25)
     future.result()
+
+    # A failed/rejected chore doesn't raise out of future.result() (seen on
+    # Perlmutter: chores rejected up front with "requires more resources
+    # than the allocation can provide" still let the stage return normally,
+    # surfacing only later as build_ff_inputs' "no isolated-atom runs"
+    # error). Check finished_file directly: warn per failure (one bad DFT
+    # candidate shouldn't stop a loop), but fail loudly if nothing converged.
+    if finished_file is not None:
+        missing = [d['working_directory'] for d in dft_dct_list
+                   if not glob.glob(os.path.join(d['working_directory'], finished_file))]
+        for working_directory in missing:
+            print(f"WARNING: converge_dft_data: no '{finished_file}' in {working_directory} -- that RMG "
+                  f"run failed; see the matensemble_workflow-*/ logs.", file=sys.stderr)
+        if len(missing) == len(dft_dct_list):
+            raise RuntimeError(f"converge_dft_data: all {len(missing)} RMG run(s) failed (no '{finished_file}' "
+                               f"written) -- see the matensemble_workflow-*/ logs.")
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +484,20 @@ def run_build_ff_inputs(config):
         if written:
             training_xyz_by_label[comp] = str(out_path)
 
+    # 1b. Converged RMG runs from earlier loops (e.g. uq/1) -- one label each.
+    for subpath in cfg.get('extra_training_subpaths') or []:
+        label = subpath.strip('/').replace('/', '_')
+        out_path = xyz_root / "training" / f"{label}.xyz"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.exists():
+            out_path.unlink()  # write_training_xyz appends -- start clean each run
+        written = write_training_xyz(dft_root / subpath, out_path, structure_filename=structure_filename)
+        print(f"  {label}: {len(written)} completed run(s) under {dft_root / subpath} -> {out_path}")
+        if not written:
+            raise RuntimeError(f"extra_training_subpaths entry {subpath!r} has no completed runs under "
+                                f"{dft_root / subpath} -- has converge_dft_data finished them?")
+        training_xyz_by_label[label] = str(out_path)
+
     if not training_xyz_by_label:
         raise RuntimeError(f"No completed training runs found under {training_defects_root} -- "
                             f"has the DFT stage actually finished?")
@@ -474,6 +538,7 @@ def run_build_ff_inputs(config):
             "force_num": cfg.get('force_num', 3),
             "stress_num": cfg.get('stress_num', 1),
         },
+        always_include_labels=tuple(cfg.get('always_include_labels') or ()),
         base_config=base_config,
     )
     print(f"Wrote {len(written_folders)} mace_inputs folder(s) under {mace_inputs_dir}")
@@ -521,8 +586,13 @@ def run_fit_and_validate(config):
         print(f"Mirrored {len(copied)} completed leaf(ves) from {mirror_cfg['source_root']} to {mirror_cfg['dest_root']}")
 
     mace_run_directory = fine_tuning_cfg['run_directory']
-    md_run_directory = copy_cfg['target_directory']
-    md_inputs_directory = md_cfg['inputs_directory']
+    # Absolute, not config-relative: copy_and_spawn_md below executes inside
+    # its own chore working directory (matensemble_workflow-*/out/chore-*/),
+    # not this process's cwd -- with relative paths it copied every model
+    # into that chore directory and then failed to find ase_mace.py there
+    # (confirmed on Perlmutter, VASP_MACE_ASE).
+    md_run_directory = os.path.abspath(copy_cfg['target_directory'])
+    md_inputs_directory = os.path.abspath(md_cfg['inputs_directory'])
     target_name = copy_cfg.get('target_name', 'model.model')
 
     md_options = {'ffield': md_cfg.get('ffield', 'ffield'),
@@ -541,7 +611,7 @@ def run_fit_and_validate(config):
                                 cores_per_task=md_cfg.get('cores_per_task', 1),
                                 gpus_per_task=md_cfg.get('gpus_per_task', 0))
 
-    pipe = Pipeline()
+    pipe = Pipeline(reserve_broker_node=False)
 
     # Registration order matters: Pipeline.strategy()'s bolo_list is checked
     # against the registry immediately at decoration time, so "fit_mace"
@@ -661,13 +731,19 @@ def run_fit_and_validate(config):
             structure_filename=ft_md_cfg.get('structure_filename', 'POSCAR'),
             finished_file=ft_md_cfg.get('finished_file'),
         )
-        if not ft_md_task_dicts:
+        structure_filename = ft_md_cfg.get('structure_filename', 'POSCAR')
+        if not any(structure_filename in files for _, _, files in os.walk(ft_md_structures_root)):
             raise ValueError(
                 f"finite_temperature_md is configured but no structures were found under "
                 f"{ft_md_structures_root} -- did you run the sample_ft_md_structures stage first? "
                 f"(Silently submitting zero run_ft_md chores here previously masked exactly this: an "
                 f"empty structures directory produced no error, just no finite-temperature MD.)"
             )
+        if not ft_md_task_dicts:
+            # Structures exist but every one already has finished_file -- a
+            # resumed run, not a misconfiguration.
+            print(f"finite_temperature_md: every structure under {ft_md_structures_root} already has "
+                  f"'{ft_md_cfg.get('finished_file')}' -- skipping FT-MD.")
         ft_md_resources = Resources(**ft_md_resources_kwargs,
                                      env={'PYTHONPATH': ensemble_fffit_pythonpath()}, inherit_env=True)
         for task_dict in ft_md_task_dicts:
@@ -691,10 +767,18 @@ def run_downselect(config):
     """
     from EnsembleFFFit.analysis.best_force_field import format_ranking_table
 
-    ff_cfg = config['downselect_force_fields']
+    ff_cfg = _with_defaults(config.get('downselect_force_fields'), {
+        'force_fields_dir': config['copy_force_fields'].get('target_directory'),
+        'ase_inputs_dir': config['MD_single_points'].get('inputs_directory'),
+        'dest_dir': config['MD_uq_single_points'].get('run_directory'),
+    })
     _require(ff_cfg, 'downselect_force_fields', ['force_fields_dir', 'ase_inputs_dir', 'dest_dir'])
 
     ff_dct = parse_labeled_tree(ff_cfg['force_fields_dir'])
+    if not ff_dct:
+        raise RuntimeError(f"No validation single points found under {ff_cfg['force_fields_dir']} -- did "
+                           f"fit_and_validate's fit_mace/copy_and_spawn_md/run_ase chores succeed? (see the "
+                           f"matensemble_workflow-*/ logs)")
     reference_dct = {"DFT": parse_reference_tree(ff_cfg['ase_inputs_dir'])}
 
     energy_weight = ff_cfg.get('energy_weight', 1.0)
@@ -719,8 +803,12 @@ def run_downselect(config):
     print_and_write(table_lines + selected_lines, ranking_path, header=header)
     print(f"Wrote ranking to {ranking_path}")
 
-    traj_cfg = config.get('trajectory_unpacking')
-    if traj_cfg:
+    if 'trajectory_unpacking' in config:
+        uq_inputs = config['MD_uq_single_points'].get('inputs_directory')
+        traj_cfg = _with_defaults(config['trajectory_unpacking'], {
+            'source_root': (config.get('finite_temperature_md') or {}).get('output_directory'),
+            'dest_root': os.path.join(uq_inputs, 'structures') if uq_inputs else None,
+        })
         _require(traj_cfg, 'trajectory_unpacking', ['source_root', 'dest_root'])
         num_runs, num_frames = unpack_trajectory_frames(traj_cfg['source_root'], traj_cfg['dest_root'])
         print(f"\nUnpacked {num_frames} frame(s) from {num_runs} run(s) under {traj_cfg['source_root']} "
@@ -737,6 +825,12 @@ def run_uq_single_points(config):
     unpacked FT-MD frame, batched via parent_levels so each force field
     gets one chore covering all of its structures rather than one chore
     per (ffield, structure) pair.
+
+    lammps_task is normally a bare filename resolved against
+    inputs_directory (MDMatEnsemble.build_lists); a value containing a path
+    separator is instead resolved against the working directory, so each
+    generation's inputs_directory (its own unpacked frames only) can share
+    one driver script rather than each needing its own copy.
     """
     from matensemble.pipeline import Pipeline
     from matensemble.model import Resources
@@ -746,11 +840,15 @@ def run_uq_single_points(config):
     uq_cfg = config['MD_uq_single_points']
     _require(uq_cfg, 'MD_uq_single_points', ['run_directory', 'inputs_directory'])
 
+    lammps_task = uq_cfg.get('lammps_task', 'ase_mace.py')
+    if os.sep in lammps_task:
+        lammps_task = os.path.abspath(lammps_task)  # os.path.join(inputs_directory, <abs>) == <abs>
+
     options = {'ffield': uq_cfg.get('ffield', 'model.model'),
                'in_file': uq_cfg.get('in_file'),
                'control': uq_cfg.get('control'),
                'structure': uq_cfg.get('structure', 'POSCAR'),
-               'lammps_task': uq_cfg.get('lammps_task', 'ase_mace.py')}
+               'lammps_task': lammps_task}
     options = {k: v for k, v in options.items() if v is not None}
 
     resources_kwargs = dict(num_tasks=uq_cfg.get('num_tasks', 1),
@@ -759,17 +857,24 @@ def run_uq_single_points(config):
 
     md = MDMatEnsemble(uq_cfg['run_directory'], uq_cfg['inputs_directory'], **options)
     task_dicts = md.build_task_dicts(
-        uq_cfg.get('lammps_task', 'ase_mace.py'),
+        lammps_task,
         uq_cfg.get('parent_levels', 8),
         uq_cfg.get('check_files', ['ffield']),
         uq_cfg.get('entry_point', 'run_ase_single_points'),
         finished_file=uq_cfg.get('finished_file'),
     )
     if not task_dicts:
+        if uq_cfg.get('finished_file') and md.build_task_dicts(
+                lammps_task, uq_cfg.get('parent_levels', 8), uq_cfg.get('check_files', ['ffield']),
+                uq_cfg.get('entry_point', 'run_ase_single_points'), finished_file=None):
+            # Every (model, frame) pair already finished -- a resumed run.
+            print("uq_single_points: every (force field, structure) pair already has "
+                  f"'{uq_cfg['finished_file']}' -- nothing new to run, skipping.")
+            return
         raise ValueError("No (force field, structure) batches found -- check run_directory/inputs_directory "
                           "in the 'MD_uq_single_points' config section.")
 
-    pipe = Pipeline()
+    pipe = Pipeline(reserve_broker_node=False)
 
     @pipe.chore(name="run_uq_ase", **resources_kwargs)
     def run_uq_ase_chore(task_dict):
@@ -795,7 +900,9 @@ def run_select_dft_candidates(config):
     with ground truth), downselect the most-uncertain, well-spread frames,
     and write them as POSCAR files for the next round of DFT calculations.
     """
-    cfg = config['dft_candidate_selection']
+    cfg = _with_defaults(config.get('dft_candidate_selection'), {
+        'force_fields_dir': config['MD_uq_single_points'].get('run_directory'),
+    })
     _require(cfg, 'dft_candidate_selection', ['force_fields_dir', 'dest_root'])
 
     single_point_dct = parse_labeled_tree(cfg['force_fields_dir'])
