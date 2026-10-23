@@ -29,6 +29,10 @@ RMG_CASE="${RMG_CASE:?set RMG_CASE to a directory holding rmg_input and its pseu
 OUT="${OUT:-$PWD/multinode-${SLURM_JOB_ID}}"
 RMG_TIMEOUT="${RMG_TIMEOUT:-420}"
 NATIVE_RMG="${NATIVE_RMG:-1}"
+# Cray MPICH NIC policy for every Flux run. NOT NUMA: under Flux each task's
+# cpuset spans the node, and NUMA then aborts MPI_Init on >1 node
+# ("Rank N is not confined to a single NUMA node"; flux_mpi_diag.slurm).
+NIC_POLICY="${NIC_POLICY:-BLOCK}"
 N=$SLURM_NNODES
 NP=$((N * 8))
 mkdir -p "$OUT"
@@ -51,7 +55,7 @@ rmg_report() {  # dir rc t0
     grep -m1 "1-TOTAL " "$l" 2>/dev/null
 }
 
-echo "Job $SLURM_JOB_ID: $N node(s) $SLURM_JOB_NODELIST  RMG_CASE=$RMG_CASE  OUT=$OUT"
+echo "Job $SLURM_JOB_ID: $N node(s) $SLURM_JOB_NODELIST  RMG_CASE=$RMG_CASE  OUT=$OUT  NIC_POLICY=$NIC_POLICY"
 
 # ---- native baseline (no container, no Flux) ------------------------------
 module load PrgEnv-gnu/8.6.0 gcc-native/13.2 Core/24.00 bzip2 boost/1.85.0 craype-x86-milan cray-fftw \
@@ -72,7 +76,7 @@ INNER="$OUT/flux_inner.sh"
 cat > "$INNER" <<EOF
 cd "$OUT"
 echo "== flux resource list (expect $N node(s), $((N * 8)) GPUs)"; flux resource list
-common="-N$N -n$NP -c6 -g1 --env=OMP_PROC_BIND=false --env=OMP_NUM_THREADS=6 --env=RMG_NUM_THREADS=5 --env=MPICH_OFI_NIC_POLICY=NUMA"
+common="-N$N -n$NP -c6 -g1 --env=OMP_PROC_BIND=false --env=OMP_NUM_THREADS=6 --env=RMG_NUM_THREADS=5 --env=MPICH_OFI_NIC_POLICY=$NIC_POLICY"
 for order in cray_pmi_first flux_pmi_first; do
     if [[ \$order == cray_pmi_first ]]; then ldp=$RMG_LDP; else ldp=$FLUX_PMI_FIRST; fi
     echo "== flux mpi_hello, \$order"

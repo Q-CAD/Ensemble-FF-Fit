@@ -184,4 +184,62 @@ Branch: `frontier-rmg-update` (off `efffit_2`). Slurm account: `mat201`
 
 ## Phase 2: multi-node RMG
 
+Test case: the 99-atom loop-1 candidate `smoke/run1/DFT/uq/1/1`
+(Bi54Se45, davidson, Quench Electrons). From job 5745551 on, RMG tests use
+a copy with `max_scf_steps = "3"` (`phase2/case_uq1_1_scf3`) -- enough to
+show ranks join, memory fits and the per-step time, without converging.
+
+- **Smoke run 4** (fresh `smoke/run2`, 5745231): 6 fresh RMG runs
+  converged (40-57 s each) before it was cancelled on purpose to free the
+  debug queue (1 submitted job per user) for multi-node tests.
+- **`multinode_test.slurm`** (5745339, 2 nodes):
+  - native `srun -N2 -n16 mpi_hello gpu`: one 16-rank job, host and
+    GPU-buffer Allreduce OK; each rank sees 1 GPU (`--gpu-bind=closest`,
+    ROCR set by Slurm); Cray MPICH loaded Cray's
+    `/opt/cray/pe/pmi/6.1.15/lib/libpmi2.so.0.6.0`.
+  - **native 2-node RMG on the 99-atom cell works**: 16 PEs (4x2x2), one
+    banner, no memory errors (it died on 1 node). First SCF step 94 s
+    (incl. setup), then 28-35 s/step; RMS[dV] 0.22 -> 0.066 in 5 steps;
+    7 steps in the 420 s cap. At 1e-8 that's ~30-50 steps, ~15-25 min.
+  - **container Flux instance spans both nodes**: `flux resource list` =
+    2 nodes / 112 cores / 16 GPUs, one instance (first time on Frontier).
+  - **`flux run -N2 -n16 mpi_hello` fails in MPI_Init on every process**,
+    with Cray's or Flux's libpmi first, host or GPU buffers:
+    `MPIDI_OFI_mpi_init_hook -> open_fabric -> MPIDI_CRAY_ofi_nic_assign_policy
+    -> MPIDI_CRAY_ofi_get_nic_index: OFI invalid value for environment
+    variable`, every process printing `[Rank 0]`. The 1-node pipeline runs
+    with the same env did join (8 MPI processes). So: an env var Cray
+    MPICH reads while picking a NIC is wrong/inconsistent under Flux on >1
+    node -- suspects MPICH_OFI_NIC_POLICY (image sets BLOCK, chores NUMA)
+    and the outer srun's SLURM_*/PALS_*/PMI_* leaking into the container.
+    RMG-through-Flux was skipped (no PMI order joined).
+  - Diagnostic `flux_mpi_diag.slurm` (5745551): env dump per node, 1-node
+    control, 2 nodes x each NIC policy with MPICH_OFI_NIC_VERBOSE=2, and
+    with the outer launcher's env stripped.
+- **ROOT CAUSE of the multi-node MPI_Init failure (5745551): Cray MPICH's
+  `MPICH_OFI_NIC_POLICY=NUMA`**, which `rmg_container_env` sets for every
+  RMG chore. Under Flux (no per-task CPU binding) each task's cpuset is
+  the whole node, and on >1 node MPICH aborts: `Unable to use a
+  NIC_POLICY of 'NUMA'. Rank 12 is not confined to a single NUMA node.
+  There are 4 numa_nodes detected`. Results, 2 nodes x 8 ranks via
+  `flux run`, Cray libpmi first:
+  | policy | result |
+  |---|---|
+  | NUMA | MPI_Init abort (above) |
+  | GPU | abort: `Cannot determine NUMA node associated with user-selected GPU` |
+  | **BLOCK** (image default) | **one 16-rank job, Allreduce OK**; NICs cxi0-3 used on each node |
+  | **ROUND-ROBIN** | **one 16-rank job, Allreduce OK** |
+  | NUMA, outer SLURM/PALS/PMI env stripped | same abort -- env leakage not involved |
+  | NUMA, 1 rank per node | OK (2 ranks) |
+  | NUMA, 1 node x 8 (control) | OK -- why every 1-node run worked |
+  Also: **Cray's own libpmi works with Flux's PMI-1 server** (all 16
+  joined with RMG's existing library order) -- the Perlmutter "Flux libpmi
+  first" fix is not needed here. The env dump shows no `SLURM_*`/`PALS_*`
+  vars inside Flux tasks at all; image env does leak in
+  (`OMP_PROC_BIND=spread`, `OMP_PLACES=threads`, `HSA_XNACK=1`,
+  `MPICH_GPU_SUPPORT_ENABLED=1`, `CUDA_VISIBLE_DEVICES=-1` from the
+  broker's own srun step; Flux overrides CUDA_VISIBLE_DEVICES per job).
+- Next: RMG via Flux on 2 nodes with BLOCK, capped at 3 SCF steps
+  (5745571).
+
 ## Phase 3: VASP on Frontier
