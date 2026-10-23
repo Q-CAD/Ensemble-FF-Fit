@@ -71,15 +71,16 @@ from EnsembleFFFit.utilities.general import mirror_completed_leaves, print_and_w
 # container-native library; the container's own multiarch dirs come next to
 # protect glibc/libstdc++/libssl from the host's SLES15 versions; the host
 # /usr/lib64 bind (for libcxi.so.1/libnl-3.so.200) comes last so it only ever
-# fills in what the container genuinely lacks. ROCm is the HOST's 6.3.1
-# (bind-mounted by launch_flux.slurm), the version rmg-gpu was built against,
-# not the image's own 6.3.3: with the image's rocBLAS, multigrid's
-# hipblasDsyrkx fails with hipErrorInvalidDeviceFunction (README section 9).
-# Re-verify every path here if the container image, ROCm version, or Cray
-# module versions change.
+# fills in what the container genuinely lacks. ROCm is the HOST ROCm that
+# rmg-gpu was built against -- RMG_ROCM, set (and bind-mounted) by
+# launch_flux.slurm -- not the image's own 6.3.3: with the image's rocBLAS,
+# multigrid's hipblasDsyrkx fails with hipErrorInvalidDeviceFunction (README
+# "Matching the container to your rmg-gpu build"). Re-verify every path
+# here if the container image or Cray module versions change.
+RMG_ROCM = os.environ.get('RMG_ROCM', '/opt/rocm-6.3.1')
 RMG_LD_LIBRARY_PATH = (
     "/opt/cray/pe/lib64:/opt/cray/libfabric/2.3.1/lib64:/opt/cray/pals/1.8/lib:"
-    "/opt/rocm-6.3.1/lib:"
+    f"{RMG_ROCM}/lib:"
     "/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:"
     "/opt/xpmem/2.7.4/lib:"
     "/sw/frontier/spack-envs/cpe24.03-cpu/opt/gcc-13.2/boost-1.85.0-3gvl6ws5xm7hrfkeyevgh45bv434ceol/lib:"
