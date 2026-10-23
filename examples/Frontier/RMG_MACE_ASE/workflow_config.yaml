@@ -33,16 +33,19 @@ converge_dft_data:
   entry_point: run_rmg_calculation
   check_files: [dft_recipe]
   finished_file: properties.json
-  # One MPI rank per GPU, 8 GCDs per Frontier node. Flux offers 56 x N - 1
-  # cores on N nodes (one stays with the broker -- check Free_cores= in
-  # matensemble_workflow.log), so 8 ranks x 7 cores can't fill every node of
-  # the allocation: use 6 (and rmg_num_threads <= 6) when an RMG job needs
-  # all of it, e.g. any 1-node run.
+  # One MPI rank per GPU, 8 GCDs per Frontier node, each on one whole
+  # 7-core L3 group (cores_per_task: 7 -- other values straddle L3/NUMA
+  # groups and run ~25% slower; the closest GCD is then picked per rank by
+  # DFT/rmg_dft.py). controller_cores 0 lets 8 x 7 fill a 1-node instance.
+  # max_tasks_per_job caps how many ranks (GPUs) one RMG job may use; jobs
+  # span ceil(ranks / 8) nodes, so it also caps nodes per job -- keep it
+  # within the allocation. A 99-atom Bi-Se cell needs >= 16 (2 nodes).
   gpus_per_node: 8
   gpus_per_task: 1
   cores_per_task: 7
   rmg_num_threads: 5
-  max_tasks_per_job: 8
+  controller_cores: 0
+  max_tasks_per_job: 16
 
 # Stage: sample_ft_md_structures. Samples `total` structures out of
 # converge_dft_data's training subtree, spread as evenly as possible across

@@ -337,5 +337,30 @@ show ranks join, memory fits and the per-step time, without converging.
   `c7_closest` (-c7 per rank = one L3 group, ROCR_VISIBLE_DEVICES = GCD
   closest to the rank's first core), `c6_closest` (-c6, same GPU rule --
   what fits MatEnsemble's 56N-1 core budget), and native on the same nodes.
+- **Job 3 results** (5746806, same 2 nodes): **gap closed.**
+  | case | step 0 | step 1 | total |
+  |---|---|---|---|
+  | native srun -c7 --gpu-bind=closest | 86.3 s | 34.87 s | 355 s, rc 0 |
+  | **flux c7_closest** (brokers --cpu-bind=none, -c7, per-task CPU affinity, closest GCD) | **87.1 s** | **34.98 s** | **335 s, rc 0** |
+  | flux c6_closest | -- | -- | rc 137 at 61 s |
+  With `--cpu-bind=none` the instance cpuset is the whole node
+  (1-7,9-15,...,57-63 + siblings), and -c7 slices land exactly on the L3
+  groups, giving every rank native's layout. c6_closest: 6-core slices put
+  ranks 1 and 2 both in the 17-23 group, so both picked GCD 2 (two ranks
+  on one GCD -> killed). So: 7 cores per rank, aligned to L3 groups.
+  hsaKmtSVMSetAttr x4 per rank remains and is harmless to speed.
+- MatEnsemble 0.5.8 core budget (manager.py): `controller_cores` is 0 on
+  a multi-rank Flux instance and 1 on a 1-rank one (hence "56N-1" only
+  ever on 1 node); `Pipeline(controller_cores=0)` lifts it on 1 node too.
+- **Pipeline integration** (this branch): `launch_flux.slurm` brokers with
+  `--cpu-bind=none`; `rmg_container_env` NIC policy BLOCK, `FI_HMEM=system`
+  (chosen over the preload shim: same speed, clean exit, no extra binary;
+  RMG uses host-buffer MPI), `RMG_GPU_CLOSEST_GCDS=4,5,2,3,6,7,0,1`;
+  `rmg_dft.py` sets each rank's ROCR_VISIBLE_DEVICES from it
+  (`closest_gpu_env`, package reference copy kept in sync); RMG Pipeline
+  `controller_cores=0`; config `cores_per_task: 7`, `max_tasks_per_job: 16`
+  (smoke: 8). Test: `phase2/pipe2node` -- `--stage converge_dft_data` on
+  2 nodes, the two 99-atom uq/1 candidates with `max_scf_steps: 3`
+  (5747038).
 
 ## Phase 3: VASP on Frontier

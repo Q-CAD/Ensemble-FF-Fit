@@ -77,7 +77,12 @@ EOF
 
 echo "Job ${SLURM_JOB_ID}: ${SLURM_NNODES} node(s) ${SLURM_JOB_NODELIST}, image ${SIF}"
 status=0
-srun -N "$SLURM_NNODES" -n "$SLURM_NNODES" --external-launcher --gpu-bind=closest --mpi=pmi2 \
+# --cpu-bind=none: with Slurm's default binding the brokers' step -- and so
+# the whole Flux instance -- only got cores 10-63 of each node (cores 1-9
+# missing), and RMG ranks then straddled L3/NUMA groups; with it, Flux can
+# give each RMG rank one whole 7-core L3 group, which matches native speed
+# (INVESTIGATION_NOTES.md, Phase 2).
+srun -N "$SLURM_NNODES" -n "$SLURM_NNODES" --external-launcher --gpu-bind=closest --mpi=pmi2 --cpu-bind=none \
     apptainer exec "${BINDS[@]}" "$SIF" flux start bash "$INITIAL" || status=$?
 rm -f "$INITIAL"
 exit $status

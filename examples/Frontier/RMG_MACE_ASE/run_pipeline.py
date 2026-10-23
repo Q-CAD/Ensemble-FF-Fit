@@ -97,6 +97,13 @@ def chore_pythonpath():
     return os.pathsep.join(p for p in (ensemble_fffit_pythonpath(), os.environ.get('PYTHONPATH')) if p)
 
 
+# GCD closest to each Frontier L3 group (cores 8k+1..8k+7, k = 0..7), i.e.
+# what native `srun --gpu-bind=closest` picks; rmg_dft.py sets each rank's
+# ROCR_VISIBLE_DEVICES from it. Flux's own gpu-affinity hands GPUs out in
+# index order instead, which put most ranks on a GCD of another NUMA domain.
+FRONTIER_CLOSEST_GCDS = "4,5,2,3,6,7,0,1"
+
+
 def rmg_container_env(cores_per_task, rmg_num_threads):
     """Env for the rmg-gpu chore/task specifically -- see RMG_LD_LIBRARY_PATH docstring.
 
@@ -107,14 +114,24 @@ def rmg_container_env(cores_per_task, rmg_num_threads):
     cache-effect reasons, not by mistake. OMP_PROC_BIND=false works around a
     confirmed GOMP affinity bug under Apptainer -- OMP_PLACES must stay
     genuinely unset (not an empty string, which crashes libgomp).
+
+    Multi-node (INVESTIGATION_NOTES.md, Phase 2): MPICH_OFI_NIC_POLICY must
+    not be NUMA -- Flux tasks aren't confined to one NUMA domain the way
+    srun-bound ones are, and Cray MPICH then aborts MPI_Init on >1 node.
+    FI_HMEM=system stops libfabric initialising its ROCr GPU-memory support
+    during an inter-node MPI_Init, which inside this container otherwise
+    leaves HIP seeing no GPUs at all (rmg-gpu hangs at startup); RMG uses
+    host-buffer MPI (MPICH_GPU_SUPPORT_ENABLED=0), so nothing is lost.
     """
     return {
         'PYTHONPATH': chore_pythonpath(),
         'OMP_PROC_BIND': 'false',
         'OMP_NUM_THREADS': str(cores_per_task),
         'RMG_NUM_THREADS': str(rmg_num_threads),
-        'MPICH_OFI_NIC_POLICY': 'NUMA',
+        'MPICH_OFI_NIC_POLICY': 'BLOCK',
         'MPICH_GPU_SUPPORT_ENABLED': '0',
+        'FI_HMEM': 'system',
+        'RMG_GPU_CLOSEST_GCDS': FRONTIER_CLOSEST_GCDS,
         'LD_LIBRARY_PATH': RMG_LD_LIBRARY_PATH,
     }
 
@@ -228,7 +245,11 @@ def run_converge_dft_data(config):
             return
         raise ValueError(f"No (structure, rmg_yaml) pairs found under {directory}")
 
-    pipe = Pipeline(reserve_broker_node=False)
+    # controller_cores=0: MatEnsemble otherwise keeps one core back on a
+    # 1-node instance, so 8 ranks x 7 cores (one whole L3 group each -- the
+    # layout that matches native speed) wouldn't fit. On >1 node it already
+    # uses 0.
+    pipe = Pipeline(reserve_broker_node=False, controller_cores=dft_cfg.get('controller_cores', 0))
     env = rmg_container_env(cores_per_task, rmg_num_threads)
 
     @pipe.chore(name="run_rmg", num_tasks=1, cores_per_task=cores_per_task, gpus_per_task=1,
@@ -273,22 +294,12 @@ def run_converge_dft_data(config):
             task_dict['allocated_nodes'] = clamped_allocated_nodes
         print(f"converge_dft_data: {task_dict['working_directory']}: {task_dict['allocated_nodes']} node(s), "
               f"{num_tasks} MPI rank(s) x {cores_per_task} core(s) x 1 GPU")
-        # mpi=False (Flux's default -- no "mpi"="pmi2" shell option) deliberately
-        # matches the confirmed-working manual invocation: `flux run --ntasks=8
-        # --cores-per-task=7 --gpus-per-task=1 ... rmg-gpu` run directly inside a
-        # `flux start` instance, with NO -o mpi=... option set. (The --mpi=pmi2
-        # seen in that workflow belongs to the OUTER `srun --external-launcher
-        # --mpi=pmi2 ... flux start ...` that bootstraps the Flux broker itself --
-        # a completely different thing from this inner job's own shell options.)
-        # mpi=True was tried here first (forcing pmi2 on the inner job) on the
-        # theory that Flux was launching num_tasks uncoordinated
-        # runtime_worker.py/rmg-gpu processes with zero PMI wiring between them --
-        # it produced a measurable partial change (single RMG startup banner
-        # instead of several) but did NOT fix the underlying
-        # HSA/hipErrorInvalidDeviceFunction failures, and the manual command
-        # proves pmi2 was never necessary in the first place. Left as mpi=False
-        # to exactly match the known-good baseline while the real cause is still
-        # being isolated.
+        # mpi=False: Flux's shell wires every task to its PMI server either way
+        # and puts its own libpmi first on the task's library path, so the
+        # num_tasks rmg-gpu processes (one per chore copy) join one MPI job --
+        # confirmed on 1 and 2 nodes (one banner, "16 MPI processes/image";
+        # INVESTIGATION_NOTES.md). The "several banners" seen long ago with
+        # mpi=False predate the current setup.
         resources = Resources(num_tasks=num_tasks, cores_per_task=cores_per_task, gpus_per_task=1,
                                env=env, inherit_env=True, mpi=False)
         pipe.call("run_rmg", task_dict, resources=resources)

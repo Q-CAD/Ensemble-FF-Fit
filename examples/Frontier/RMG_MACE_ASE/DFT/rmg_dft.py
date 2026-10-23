@@ -56,6 +56,26 @@ from pyRMG.rmg_input import RMGInput
 from pyRMG.rmg_calculator import RMG
 
 
+def closest_gpu_env():
+    """
+    Environment for the rmg-gpu subprocess: os.environ, plus
+    ROCR_VISIBLE_DEVICES set to the GPU closest to this process's CPUs when
+    RMG_GPU_CLOSEST_GCDS is set (comma-separated GPU per 8-core L3 group,
+    e.g. Frontier's "4,5,2,3,6,7,0,1" from run_pipeline.py). Flux (unlike
+    `srun --gpu-bind=closest`) doesn't pick GPUs by topology; with each
+    rank on its own L3 group (cores_per_task: 7 and Flux's per-task CPU
+    affinity) this reproduces srun's mapping. Unchanged environment
+    otherwise.
+    """
+    env = dict(os.environ)
+    gcds = env.get('RMG_GPU_CLOSEST_GCDS')
+    if gcds:
+        gcds = gcds.split(',')
+        first_cpu = min(os.sched_getaffinity(0))
+        env['ROCR_VISIBLE_DEVICES'] = gcds[(first_cpu // 8) % len(gcds)]
+    return env
+
+
 def run_rmg_calculation(working_directory_list, rmg_yaml_list):
     n = len(working_directory_list)
     assert len(rmg_yaml_list) == n, "working_directory_list and rmg_yaml_list must be the same length"
@@ -136,7 +156,7 @@ def run_rmg_calculation(working_directory_list, rmg_yaml_list):
 
         result = subprocess.run(
             calc.command, shell=True, cwd=calc.directory, close_fds=False,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=closest_gpu_env(),
         )
         if result.returncode != 0:
             raise RuntimeError(
