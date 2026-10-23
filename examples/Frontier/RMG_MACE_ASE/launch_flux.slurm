@@ -55,13 +55,14 @@ fi
 # output file until the stage, or the job, ends.
 FLUX_CMD="${FLUX_CMD:-env PYTHONPATH=${PYTHONPATH_IN} PYTHONUNBUFFERED=1 python run_pipeline.py --config ${CONFIG} --stage ${STAGE}}"
 
-# Host paths for the natively built rmg-gpu (Cray MPICH/libfabric/PALS,
-# Spack boost/bzip2, libcxi/libnl from /usr/lib64). /lustre/orion and
+# Host paths for the natively built rmg-gpu (its ROCm 6.3.1, Cray MPICH/
+# libfabric/PALS, Spack boost/bzip2, libcxi/libnl from /usr/lib64). /lustre/orion and
 # /sw/frontier are already in Frontier's default Apptainer bind list; the
 # /opt/cray_extra/lib64 mount point is created on the fly (underlay).
 # Only rmg-gpu's own subprocess puts these on its library path
 # (run_pipeline.py's RMG_LD_LIBRARY_PATH) -- never Flux or Python.
-BINDS=(--bind /opt/cray/:/opt/cray
+BINDS=(--bind /opt/rocm-6.3.1/:/opt/rocm-6.3.1
+       --bind /opt/cray/:/opt/cray
        --bind /usr/lib64/:/opt/cray_extra/lib64
        --bind /var/spool/slurmd)
 

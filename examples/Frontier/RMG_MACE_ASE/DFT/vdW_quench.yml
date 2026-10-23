@@ -1,5 +1,7 @@
 rmg_executable: "/path/to/rmgdft/build-frontier-gpu/rmg-gpu"  # see the top-level README.md for how to build this
 structure_filename: "POSCAR"
+# allocated_nodes: 2   # uncomment to pin this recipe's RMG jobs to N nodes (N x 8 ranks,
+#                      # still capped by max_tasks_per_job); absent = pyRMG's own estimate
 rmg_threads_per_node: 5
 omp_threads_per_node: 7
 

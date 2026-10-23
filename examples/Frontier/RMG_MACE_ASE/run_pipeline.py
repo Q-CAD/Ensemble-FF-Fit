@@ -71,13 +71,17 @@ from EnsembleFFFit.utilities.general import mirror_completed_leaves, print_and_w
 # container-native library; the container's own multiarch dirs come next to
 # protect glibc/libstdc++/libssl from the host's SLES15 versions; the host
 # /usr/lib64 bind (for libcxi.so.1/libnl-3.so.200) comes last so it only ever
-# fills in what the container genuinely lacks. Re-verify every path here
-# against build_apptainer_RMG_Frontier.md if the container image, ROCm
-# version, or Cray module versions change.
+# fills in what the container genuinely lacks. ROCm is the HOST's 6.3.1
+# (bind-mounted by launch_flux.slurm), the version rmg-gpu was built against,
+# not the image's own 6.3.3: with the image's rocBLAS, multigrid's
+# hipblasDsyrkx fails with hipErrorInvalidDeviceFunction (README section 9).
+# Re-verify every path here if the container image, ROCm version, or Cray
+# module versions change.
 RMG_LD_LIBRARY_PATH = (
     "/opt/cray/pe/lib64:/opt/cray/libfabric/2.3.1/lib64:/opt/cray/pals/1.8/lib:"
+    "/opt/rocm-6.3.1/lib:"
     "/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:"
-    "/opt/rocm-6.3.3/lib:/opt/xpmem/2.7.4/lib:"
+    "/opt/xpmem/2.7.4/lib:"
     "/sw/frontier/spack-envs/cpe24.03-cpu/opt/gcc-13.2/boost-1.85.0-3gvl6ws5xm7hrfkeyevgh45bv434ceol/lib:"
     "/sw/frontier/spack-envs/base/opt/linux-sles15-x86_64/gcc-7.5.0/bzip2-1.0.8-st7di5r4yikef76nw4xenvocycgp3god/lib:"
     "/opt/cray_extra/lib64"
@@ -164,6 +168,22 @@ def _require(cfg, stage_name, keys):
 # Stage: converge_dft_data (Pipeline 0)
 # ---------------------------------------------------------------------------
 
+def rmg_resource_estimator(structure, input_args, options):
+    """
+    `resource_estimator` for DFTMatEnsemble.build_dft_dcts: a positive
+    `allocated_nodes` in the RMG recipe yaml pins the node count (rmg_dft.py
+    already passes that same yaml value on to RMG, so the two agree);
+    otherwise pyRMG's own processor-grid estimate. Same idea as the VASP
+    examples' `nodes:` key.
+    """
+    from EnsembleFFFit.base import DFTMatEnsemble
+
+    pinned = input_args.get('allocated_nodes')
+    if pinned and pinned > 0:
+        return pinned
+    return DFTMatEnsemble._default_rmg_resource_estimator(structure, input_args, options)
+
+
 def run_converge_dft_data(config):
     """
     Submit one RMG execution chore per (structure, rmg_yaml) pair found
@@ -215,7 +235,8 @@ def run_converge_dft_data(config):
     }
 
     dft = DFTMatEnsemble(directory, directory, **options)
-    dft_dct_list = dft.build_dft_dcts(dft_task, check_files, entry_point, finished_file=finished_file)
+    dft_dct_list = dft.build_dft_dcts(dft_task, check_files, entry_point, finished_file=finished_file,
+                                       resource_estimator=rmg_resource_estimator)
 
     if not dft_dct_list:
         # build_full_runs itself is cheap (just directory walks/proximity matching) --
