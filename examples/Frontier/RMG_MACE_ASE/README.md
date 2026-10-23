@@ -257,7 +257,14 @@ BiSe vacancies and four 12-atom BiSe EoS points under `DFT/`, fills in
 header lists (3 fits × 2 epochs, 4 short MD runs, 2 models kept, 2 candidates,
 `cores_per_task: 6`).
 
-SMOKE_RESULTS_PLACEHOLDER
+**Measured (smoke test, 1 node, 2026-10-23):** each 11-12 atom RMG single point took
+40-66 s (8 GPUs, ~1.9 s per SCF step); MACE fitting, validation, FT-MD, UQ single
+points and candidate selection then took about 4.5 min, and a rerun of `--stage all`
+skipped every finished DFT run, fit and MD run. Known gaps: the isolated Bi atom
+doesn't converge with `davidson` (pitfalls — pass `CONVERGED_BI=` to
+`make_smoke_copy.sh`), and the loop-2 RMG run on the new candidates wasn't completed
+in the smoke test (with the default `max_supercell_atoms: 100` they are ~99-atom
+cells, which need 2+ nodes — see step 5).
 
 ## 7. The next loop
 
