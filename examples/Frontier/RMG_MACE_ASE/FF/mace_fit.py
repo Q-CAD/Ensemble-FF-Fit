@@ -39,6 +39,39 @@ import json
 import glob
 
 
+def _fit_batch_sizes_to_data(args):
+    """
+    Clamp args.batch_size / args.valid_batch_size to the data this member
+    actually has. MACE's training loader drops incomplete batches, so a
+    member with fewer training configs than batch_size gets an empty loader
+    and dies in compute_avg_num_neighbors ("torch.cat(): expected a
+    non-empty list of Tensors" -- seen in the smoke test, where a member had
+    5 training configs against the default batch_size of 10). Small label
+    combinations are a normal outcome of the ensemble sampling, so shrink
+    the batch instead of failing. MACE carves the validation set out of
+    train_file (valid_fraction) unless valid_file is given; this mirrors
+    that split's sizes (mace.data.utils.random_train_valid_split, 0.3.16).
+    """
+    from ase.io import read
+
+    train_file = getattr(args, "train_file", None)
+    if not train_file or not os.path.exists(train_file):
+        return
+    n = len(read(train_file, index=":", format="extxyz"))
+    valid_file = getattr(args, "valid_file", None)
+    if valid_file and os.path.exists(valid_file):
+        n_train, n_valid = n, len(read(valid_file, index=":", format="extxyz"))
+    else:
+        n_train = min(n - int((getattr(args, "valid_fraction", None) or 0.1) * n), n - 1)
+        n_valid = n - n_train
+    for key, available in (("batch_size", n_train), ("valid_batch_size", n_valid)):
+        requested = getattr(args, key, None)
+        if requested and available >= 1 and requested > available:
+            print(f"mace_fit: {key}={requested} > {available} config(s) available in {train_file}; "
+                  f"using {available}", file=sys.stderr)
+            setattr(args, key, available)
+
+
 def run_mace_fit(overrides):
     """
     Run a single MACE fit from a per-run `overrides` dict (foundation_model/
@@ -77,6 +110,7 @@ def run_mace_fit(overrides):
     finished_file = overrides.get("finished_file")
     already_done = bool(finished_file and work_path and glob.glob(os.path.join(work_path, finished_file)))
     if not already_done:
+        _fit_batch_sizes_to_data(args)
         run(args)
 
     # results_dir/name are included (not just status) so callers watching

@@ -6,9 +6,9 @@
 #   converge_dft_data.max_tasks_per_job     16   -> 8  (1 node)
 #   sample_ft_md_structures.total           20   -> 4
 #   build_ff_inputs.total_cap               100  -> 3
-#   build_ff_inputs.mace_overrides          + max_num_epochs: 2, batch_size/valid_batch_size: 2
-#                                           (default 10 > the ~5 training configs per member here:
-#                                           an empty loader, failing as torch.cat() on an empty list)
+#   build_ff_inputs.mace_overrides          + max_num_epochs: 2
+#   (members here have ~5 training configs, fewer than MACE's batch_size of 10 --
+#   FF/mace_fit.py shrinks the batch to fit, so no override is needed)
 #   finite_temperature_md.in_file           in.mace.json -> in.mace.smoke.json (100 steps, 1 cycle,
 #                                           max_supercell_atoms 24: candidates small enough for 1 node)
 #   downselect_force_fields.number_to_copy  25   -> 2
@@ -113,8 +113,6 @@ build_ff_inputs:
   mace_overrides:
     freeze: 6
     max_num_epochs: 2
-    batch_size: 2
-    valid_batch_size: 2
 
 # Stage: fit_and_validate. Covers this section plus validation_mirroring,
 # copy_force_fields, MD_single_points, and finite_temperature_md below (all
