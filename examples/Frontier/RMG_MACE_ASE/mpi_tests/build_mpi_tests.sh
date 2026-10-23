@@ -1,0 +1,9 @@
+#!/usr/bin/bash
+# Build mpi_hello natively with the same module stack as rmg-gpu (README.md
+# step 3), so it links the same Cray MPICH / PMI / GTL libraries and is run
+# inside the container with the same RMG_LD_LIBRARY_PATH.
+set -euo pipefail
+cd "$(dirname "$0")"
+module load PrgEnv-gnu/8.6.0 gcc-native/13.2 craype-x86-milan craype-accel-amd-gfx90a rocm/6.3.1
+cc -O2 -o mpi_hello mpi_hello.c -I"${ROCM_PATH}/include" -D__HIP_PLATFORM_AMD__ -L"${ROCM_PATH}/lib" -lamdhip64
+ldd mpi_hello | grep -E "mpi|pmi|gtl|amdhip" 
