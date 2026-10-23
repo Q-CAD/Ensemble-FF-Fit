@@ -4,7 +4,10 @@
  *   rank r/size host=<h> local=<l> gpu_count=<n> gpu0_pci=<bus> ROCR=.. CUDA=.. pmi=<libpmi path>
  * then a host-buffer Allreduce check, and -- with argument "gpu" and
  * MPICH_GPU_SUPPORT_ENABLED=1 -- the same Allreduce on hipMalloc'd buffers.
- * size=1 on every rank means each process came up as its own singleton. */
+ * size=1 on every rank means each process came up as its own singleton.
+ * Built with -DHIP_FIRST (mpi_hello_hipfirst), the GPUs are queried before
+ * MPI_Init instead of after it -- to tell whether MPI_Init itself (e.g.
+ * libfabric's GPU-memory setup when the job spans nodes) breaks HIP. */
 #include <hip/hip_runtime_api.h>
 #include <mpi.h>
 #include <stdio.h>
@@ -31,6 +34,10 @@ static void loaded_pmi(char *out, size_t n) {
 int main(int argc, char **argv) {
     int rank, size, local = -1, ndev = 0;
     char host[256], pmi[512], pci[64] = "-";
+#ifdef HIP_FIRST
+    hipError_t pre = hipGetDeviceCount(&ndev);
+    if (pre != hipSuccess) ndev = 0;
+#endif
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -39,7 +46,10 @@ int main(int argc, char **argv) {
     MPI_Comm_rank(node, &local);
     gethostname(host, sizeof host);
     loaded_pmi(pmi, sizeof pmi);
-    if (hipGetDeviceCount(&ndev) == hipSuccess && ndev > 0) {
+#ifndef HIP_FIRST
+    if (hipGetDeviceCount(&ndev) != hipSuccess) ndev = 0;
+#endif
+    if (ndev > 0) {
         hipSetDevice(local % ndev);
         hipDeviceGetPCIBusId(pci, sizeof pci, local % ndev);
     }

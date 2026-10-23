@@ -232,14 +232,32 @@ show ranks join, memory fits and the per-step time, without converging.
   | NUMA, outer SLURM/PALS/PMI env stripped | same abort -- env leakage not involved |
   | NUMA, 1 rank per node | OK (2 ranks) |
   | NUMA, 1 node x 8 (control) | OK -- why every 1-node run worked |
-  Also: **Cray's own libpmi works with Flux's PMI-1 server** (all 16
-  joined with RMG's existing library order) -- the Perlmutter "Flux libpmi
-  first" fix is not needed here. The env dump shows no `SLURM_*`/`PALS_*`
+  Also: no "Flux libpmi first" library-path change was needed -- but not
+  because Cray's libpmi speaks Flux's PMI: /proc/self/maps in 5745571 shows
+  every rank loaded `/usr/local/lib/flux/libpmi2.so.0.0.0` even with
+  RMG_LD_LIBRARY_PATH (Cray first). Flux's shell puts its own libpmi
+  directory first on each task's library path, i.e. Flux applies the
+  Perlmutter fix itself. The env dump shows no `SLURM_*`/`PALS_*`
   vars inside Flux tasks at all; image env does leak in
   (`OMP_PROC_BIND=spread`, `OMP_PLACES=threads`, `HSA_XNACK=1`,
   `MPICH_GPU_SUPPORT_ENABLED=1`, `CUDA_VISIBLE_DEVICES=-1` from the
   broker's own srun step; Flux overrides CUDA_VISIBLE_DEVICES per job).
-- Next: RMG via Flux on 2 nodes with BLOCK, capped at 3 SCF steps
-  (5745571).
+- **RMG via Flux on 2 nodes, BLOCK, 3-SCF-step cap** (5745571): the
+  16 ranks of `mpi_hello` now join (host Allreduce OK, Flux libpmi2 loaded)
+  -- **but every rank reports `gpu_count=0`**, the GPU-buffer variant logs
+  `GTL_DEBUG: hsa_init ... HSA_STATUS_ERROR_OUT_OF_RESOURCES` on all 16, and
+  rmg-gpu hung at startup (no log, empty stdout) until the 420 s timeout.
+  Re-reading 5745551: in the same 2-node instance, a `-N1` job saw 8 GPUs
+  per rank while every `-N2` job (even 1 rank per node) saw 0.
+- **GPU diag** (5745716, no native steps first): in `-N2` Flux tasks
+  `/dev/kfd` and all render nodes are present, `rocminfo` finds every GPU,
+  `ulimit -u` ~2M, memlock unlimited -- yet `mpi_hello -N2` (2 or 16
+  ranks) reports 0 GPUs after MPI_Init. **So MPI_Init in a job spanning
+  nodes, inside the container, breaks HIP's GPU discovery.** Suspects:
+  libfabric (CXI) initialising its ROCr HMEM support / ROCR cache monitor
+  during inter-node MPI_Init, and the image's global `HSA_XNACK=1` (unset
+  natively). Matrix test `flux_gpu_mpi_matrix.slurm` (5745756): hipfirst
+  build, HSA_XNACK=0/unset, FI_HMEM=system,
+  FI_MR_ROCR_CACHE_MONITOR_ENABLED=0; then RMG with the first that works.
 
 ## Phase 3: VASP on Frontier
