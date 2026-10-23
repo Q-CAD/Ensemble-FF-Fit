@@ -31,12 +31,18 @@ from what's here.
   single-point frames (20 per trajectory, except Pd34Se11: 7 — the other 13 frames'
   `vasprun.xml` never finished). Used as every ensemble member's `test.xyz` and as
   the ranking reference.
-- Both were converted once by **`DFT/prepare_pd_se_data.py`** from the original
-  parse2fit/FitSNAP `.xyz` files and AIMD `vasprun.xml` files (paths in its docstring).
-  The FitSNAP stress (bar, VASP sign) was converted to MACE/ASE's eV/Å³ and opposite
-  sign; the script checks that convention against ASE's own `vasprun.xml` reader.
-  All data used the same VASP settings as `DFT/vdW_single_point.yml` (MPRelaxSet +
-  IVDW=12, static) — keep them consistent if you add data.
+- Both were converted once, before this example was written, and are shipped as-is
+  (nothing in the pipeline regenerates them; new DFT data from the loop is parsed
+  separately, by `build_ff_inputs.extra_training_subpaths`). Sources: training from
+  parse2fit/FitSNAP `.xyz` files under
+  `/pscratch/sd/r/rym/Pd-Se_MACE/Gen_1/Data/training_data/mace_data/<label>/`; testing
+  from AIMD single-point `vasprun.xml` files under
+  `/pscratch/sd/r/rym/Pd-Se_MACE/NB_example/DFT/structures/aimd_sp/Pd-Se/`, read with
+  pymatgen the same way `DFT/vasp_dft.py` reads its own runs. The FitSNAP stress (bar,
+  VASP sign) was converted to MACE/ASE's eV/Å³ and opposite sign, checked against ASE's
+  own `vasprun.xml` reader. All data used the same VASP settings as
+  `DFT/vdW_single_point.yml` (MPRelaxSet + IVDW=12, static) — keep them consistent if
+  you add data.
 - **`DFT/isolated_elements/{Pd,Se}/POSCAR`** — single atoms in a 20 Å box, converged by
   the first stage.
 - **Not included:** the MACE foundation model (step 3), VASP POTCARs (licensed — step

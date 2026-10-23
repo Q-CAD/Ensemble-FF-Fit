@@ -224,8 +224,8 @@ def run_vasp_calculation(working_directory_list, vasp_yaml_list):
             # factor). Negated here so stress_voigt matches the ASE-Voigt
             # (xx, yy, zz, yz, xz, xy) convention write_training_xyz assumes
             # -- this example's DFT/uq results become MACE training data.
-            # Cross-checked against ase.io.read(vasprun.xml) by
-            # DFT/prepare_pd_se_data.py.
+            # Cross-checked against ase.io.read(vasprun.xml) on this
+            # example's AIMD testing data.
             property_dictionary['stress_voigt'] = [
                 -stress[0][0] * KBAR_TO_EV_PER_A3, -stress[1][1] * KBAR_TO_EV_PER_A3, -stress[2][2] * KBAR_TO_EV_PER_A3,
                 -stress[1][2] * KBAR_TO_EV_PER_A3, -stress[0][2] * KBAR_TO_EV_PER_A3, -stress[0][1] * KBAR_TO_EV_PER_A3,

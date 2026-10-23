@@ -122,3 +122,11 @@ dmypy.json
 # PSlibrary/SSSP), not committed; see each QE-based example's README for
 # the exact file(s) it expects under its own qe_pseudos/.
 *.UPF
+
+# Editor swap/backup files (Vim, Emacs)
+*.swp
+*.swo
+*.sw[a-p]
+*~
+\#*\#
+.\#*

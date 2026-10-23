@@ -13,7 +13,7 @@ swapped for examples/Perlmutter/VASP_ReaxFF_LAMMPs's VASP version, plus the
 Perlmutter Flux settings that example established (reserve_broker_node=False
 on every Pipeline, set_cpu_affinity=False on every submit). The training
 and testing data here start as pre-computed .xyz files (DFT/training,
-DFT/testing -- see DFT/prepare_pd_se_data.py) rather than POSCARs to
+DFT/testing -- provenance in README.md) rather than POSCARs to
 converge, so sample_ft_md_structures/build_ff_inputs/validation_unpacking
 read .xyz frames directly instead of converged DFT run directories.
 
@@ -499,7 +499,7 @@ def run_build_ff_inputs(config):
     (one per label-combo x weight-combo sample) that fit_and_validate reads
     from:
       1. one combinable training label per DFT/training/<label>/ subset
-         (already extxyz -- see DFT/prepare_pd_se_data.py), plus one per
+         (already extxyz -- provenance in README.md), plus one per
          extra_training_subpaths entry (converged VASP runs, e.g. a previous
          loop's DFT/uq/1, converted via write_training_xyz -- empty in the
          first loop, see the "# GEN" keys in workflow_config.yaml);
