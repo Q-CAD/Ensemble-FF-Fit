@@ -44,6 +44,37 @@ Branch: `frontier-rmg-update` (off `efffit_2`). Slurm account: `mat201`
 
 ## Phase 1: example update
 
+- **Image pull** (`build_image.slurm`, job 5744139): failed after 9.5 min,
+  `stream error: stream ID 1; PROTOCOL_ERROR; received from peer` while
+  fetching a layer through the OLCF proxy. Added a 4-attempt retry loop;
+  the resubmission (5744210) succeeded first try in 8:56. Transient.
+- **`frontier-v0.5.8` is not MatEnsemble 0.5.8.** Its `/opt/matensemble`
+  is the same commit as the old v0.5.5 image (`6307e46`, 2026-07-08,
+  reports 0.5.3); `Pipeline.__init__` takes only `basedir`/`registry`, so
+  `Pipeline(reserve_broker_node=False)` would raise `TypeError`. The
+  Frontier Dockerfile does `git clone --depth 1` of main, so the tags
+  were presumably rebuilt from a cached layer. MatEnsemble main =
+  `5d8be30` (2026-08-31, version 0.5.8 since `5371882`, 2026-08-18) -- what
+  Perlmutter's Dockerfile.mace cloned on 2026-10-22.
+- **The published image has no torch, mace-torch or openequivariance**
+  (nor pymatgen-analysis-defects/mp-api/matminer). The old sandbox's copies
+  (torch 2.9.1+rocm6.3, mace-torch 0.3.16, oeq 0.6.8) were installed into
+  the writable sandbox by hand. So a derived image is required, not just a
+  convenience: `matensemble-frontier.def` installs MatEnsemble@5d8be30,
+  those three and the missing core deps, with import/version checks.
+- Image otherwise: Python 3.12.3, flux-core/flux-python 0.70.0, ROCm 6.3.3,
+  vanilla MPICH 3.4.3, mpi4py 4.1.2, LAMMPS python module importable,
+  gcc 14.3.0, hipcc.
+- Frontier's Apptainer (1.5.3) config already binds `/lustre/orion`,
+  `/sw/frontier`, `/ccs/home`, and `/lib64:/host_lib64`, with
+  `enable underlay = yes` -- so `--bind /usr/lib64/:/opt/cray_extra/lib64`
+  works against a read-only .sif; the sandbox `mkdir` step is obsolete.
+- **Chore PYTHONPATH** (found reading the code, not by a failure):
+  `Resources.env['PYTHONPATH']` replaces the inherited value, and every
+  chore set it to the Ensemble-FF-Fit root only. With pyRMG on PYTHONPATH
+  instead of installed in the image, RMG chores could not have imported it.
+  `chore_pythonpath()` appends the launcher's PYTHONPATH.
+
 ## Phase 2: multi-node RMG
 
 ## Phase 3: VASP on Frontier

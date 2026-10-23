@@ -10,9 +10,11 @@
 #
 #   sbatch build_image.slurm
 #   IMAGE_TAG=frontier-v0.5.9 IMAGE_DIR=/path/to/images sbatch build_image.slurm
+#   DEF=matensemble-frontier.def sbatch build_image.slurm   # + derived image with this
+#       example's Python packages (reuses an already-pulled base .sif in IMAGE_DIR)
 #
 # Keep IMAGE_TAG in step with the MatEnsemble version Ensemble-FF-Fit was
-# last validated against (README.md step 1a). A pull takes ~5 min.
+# last validated against (README.md step 1a). A pull takes ~5-10 min.
 
 #SBATCH -A mat201
 #SBATCH -J build_image
@@ -41,9 +43,29 @@ mkdir -p "$NVME_DIR/apptainer_cache" "$NVME_DIR/apptainer_tmp" "$IMAGE_DIR"
 export APPTAINER_CACHEDIR="$NVME_DIR/apptainer_cache"
 export APPTAINER_TMPDIR="$NVME_DIR/apptainer_tmp"
 
+# Optional derived image (README.md step 1c): DEF=<.def file> builds
+# DERIVED_SIF from the pulled image after the pull.
+DEF="${DEF:-}"
+[[ -z "$DEF" ]] || DEF="$(cd "$(dirname "$DEF")" && pwd)/$(basename "$DEF")"
+DERIVED_SIF="${DERIVED_SIF:-${SIF_NAME%.sif}-ensemblefffit.sif}"
+
 cd "$NVME_DIR"
-echo "Pulling ${IMAGE_REPO}:${IMAGE_TAG} -> ${SIF_NAME}"
-apptainer pull --force "$SIF_NAME" "${IMAGE_REPO}:${IMAGE_TAG}"
+if [[ -n "$DEF" && -f "$IMAGE_DIR/$SIF_NAME" ]]; then
+    echo "Reusing $IMAGE_DIR/$SIF_NAME as the base image (no pull)"
+    cp "$IMAGE_DIR/$SIF_NAME" .
+else
+    PULLED=1
+    echo "Pulling ${IMAGE_REPO}:${IMAGE_TAG} -> ${SIF_NAME}"
+    # Retried: large layers coming through the proxy occasionally die with an
+    # HTTP/2 "stream error ... PROTOCOL_ERROR" (seen 2026-10-23). Layers that
+    # did finish stay in APPTAINER_CACHEDIR, so a retry only refetches the rest.
+    for attempt in 1 2 3 4; do
+        apptainer pull --force "$SIF_NAME" "${IMAGE_REPO}:${IMAGE_TAG}" && break
+        [[ $attempt -lt 4 ]] || { echo "Pull failed $attempt times" >&2; exit 1; }
+        echo "Pull attempt $attempt failed; retrying in 30 s" >&2
+        sleep 30
+    done
+fi
 
 # Record what's inside, so the README/notes can be checked against it.
 apptainer exec "$SIF_NAME" bash -c '
@@ -54,5 +76,12 @@ apptainer exec "$SIF_NAME" bash -c '
     flux version | head -3
     ls -d /opt/rocm-* /opt/mpich/* 2>/dev/null'
 
-cp "$SIF_NAME" "$IMAGE_DIR/"
-echo "Wrote ${IMAGE_DIR}/${SIF_NAME}"
+[[ -z "${PULLED:-}" ]] || cp "$SIF_NAME" "$IMAGE_DIR/"
+echo "Base image: ${IMAGE_DIR}/${SIF_NAME}"
+
+if [[ -n "$DEF" ]]; then
+    echo "Building ${DERIVED_SIF} from ${DEF}"
+    apptainer build --fakeroot --force --build-arg BASE_SIF="$NVME_DIR/$SIF_NAME" "$DERIVED_SIF" "$DEF"
+    cp "$DERIVED_SIF" "$IMAGE_DIR/"
+    echo "Derived image: ${IMAGE_DIR}/${DERIVED_SIF}"
+fi

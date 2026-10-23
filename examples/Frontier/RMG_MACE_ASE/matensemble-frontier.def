@@ -1,0 +1,63 @@
+# Derived image: the pulled MatEnsemble Frontier .sif plus the extra Python
+# packages this example needs that the published image doesn't carry. Built
+# by build_image.slurm when DEF is set (README.md step 1c):
+#
+#   DEF=matensemble-frontier.def sbatch build_image.slurm
+#
+# which runs, on the node's NVMe,
+#
+#   apptainer build --fakeroot --build-arg BASE_SIF=<pulled .sif> <out .sif> matensemble-frontier.def
+#
+# Add packages to the pip line below, pinned, and keep the checks at the end
+# in step -- a bad install then fails the build rather than the first chore.
+# Ensemble-FF-Fit and pyRMG themselves are deliberately NOT installed here:
+# launch_flux.slurm puts your checkouts on PYTHONPATH, so editing them never
+# needs an image rebuild.
+
+Bootstrap: localimage
+From: {{ BASE_SIF }}
+
+%arguments
+    BASE_SIF=matensemble-frontier-v0.5.8.sif
+
+%post
+    # Compute nodes reach PyPI/GitHub only through the OLCF proxy.
+    export http_proxy=http://proxy.ccs.ornl.gov:3128/ https_proxy=http://proxy.ccs.ornl.gov:3128/
+    export PIP_NO_CACHE_DIR=1
+    PIP="/opt/basic/bin/python -m pip install"
+
+    # 1. MatEnsemble 0.5.8 (Q-CAD/MatEnsemble main, 2026-08-31 -- what the
+    #    Perlmutter VASP_MACE_ASE image cloned). The published Frontier tags
+    #    up to at least frontier-v0.5.8 still carry the 2026-07-08 checkout
+    #    (6307e46, reports 0.5.3), whose Pipeline has no reserve_broker_node.
+    #    Replaces the image's editable /opt/matensemble install.
+    $PIP "matensemble @ git+https://github.com/Q-CAD/MatEnsemble.git@5d8be305f1"
+
+    # 2. ROCm torch first, so mace-torch never pulls a CUDA/CPU build --
+    #    same pins as install_gpu_torch.py's rocm6.3 entry (ROCm 6.3.3 in the image).
+    $PIP torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 \
+        --index-url https://download.pytorch.org/whl/rocm6.3
+
+    # 3. MACE (>= 0.3.15 for --freeze) + its ROCm accelerator, and
+    #    Ensemble-FF-Fit's core dependencies the image lacks.
+    $PIP mace-torch==0.3.16 openequivariance==0.6.8 \
+        pymatgen-analysis-defects mp-api matminer
+
+    # Fail the build, not the first chore, if anything above is off.
+    /opt/basic/bin/python - <<'PY'
+import importlib.metadata as md
+import torch, mace, matensemble.pipeline, flux.job, flux.resource
+assert torch.version.hip, f"torch is not a ROCm build: {torch.__version__}"
+assert md.version("matensemble") == "0.5.8", md.version("matensemble")
+md.version("openequivariance")  # installed; not imported -- it JIT-compiles HIP kernels and wants a GPU
+import inspect
+assert "reserve_broker_node" in inspect.signature(matensemble.pipeline.Pipeline).parameters
+from mace.tools import build_default_arg_parser as p
+assert p().parse_args(["--name", "x", "--freeze", "6"]).freeze == 6, "mace-torch lacks --freeze"
+import pymatgen.core, pymatgen.analysis.defects, ase, yaml, sklearn, matminer
+print("derived image OK: torch", torch.__version__, "mace", mace.__version__,
+      "matensemble", md.version("matensemble"))
+PY
+
+%labels
+    org.ensemble-ff-fit.example examples/Frontier/RMG_MACE_ASE

@@ -30,7 +30,7 @@
 set -euo pipefail
 
 # Site paths -- override as env vars, or edit these defaults.
-SIF="${SIF:-/lustre/orion/mat201/scratch/rjmorelock/MatEnsemble_Update/images/matensemble-frontier-v0.5.8.sif}"
+SIF="${SIF:-/lustre/orion/mat201/scratch/rjmorelock/MatEnsemble_Update/images/matensemble-frontier-v0.5.8-ensemblefffit.sif}"
 ENSEMBLE_FF_FIT="${ENSEMBLE_FF_FIT:-/lustre/orion/mat201/scratch/rjmorelock/MatEnsemble_Update/Ensemble-FF-Fit}"
 PYRMG="${PYRMG:-/lustre/orion/mat201/scratch/rjmorelock/MatEnsemble2/pyrmg}"
 # Extra Python packages installed alongside the image (README.md step 1c),

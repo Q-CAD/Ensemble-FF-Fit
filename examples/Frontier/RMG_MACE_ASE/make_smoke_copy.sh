@@ -49,7 +49,7 @@ sed -e "s|^rmg_executable: .*|rmg_executable: \"$RMGDFT/build-frontier-gpu/rmg-g
 
 if [[ -z "$MODEL" ]]; then
     MODEL="$DEST/model.model"
-    curl -fL -o "$MODEL" \
+    curl -fsSL -o "$MODEL" \
         https://github.com/ACEsuit/mace-foundations/releases/download/mace_omat_0/mace-omat-0-medium.model
 fi
 for d in FF/generation_0/mace-omat-medium MD/finite_temperature/uq/generation_0/mace-omat-medium \
