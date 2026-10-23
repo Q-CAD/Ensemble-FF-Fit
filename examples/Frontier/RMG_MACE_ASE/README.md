@@ -460,12 +460,45 @@ HSA crash (that crash is RMG running out of GPU memory — it happens natively t
 on the image's ROCm 6.3.3; on its build ROCm (step 3b) multi-node runs need no
 `FI_HMEM` override, and VASP (on its own host ROCm) never did.
 
-**Still open:** pyRMG's node estimate is far above what fits (14 nodes for the 99-atom
-cell, which runs on 2); with the image's ROCm each rank logged `HSA exception:
-hsaKmtSVMSetAttr failed.` 4 times
-(harmless to speed or results). Multigrid in the container: works with the host ROCm
-(step 3b); 2 nodes x 8 ranks via `converge_dft_data` converged the isolated Bi atom in
-11 SCF steps / 41 s, the same energy as the native multigrid reference (36 s).
-Also unchecked: that `rmg_dft.py`'s `stress_voigt` (taken from the ASE calculator, so
-ASE's sign convention) matches the training data's once loop-2 candidates converge.
+Multigrid in the container works with the host ROCm (step 3b); 2 nodes x 8 ranks via
+`converge_dft_data` converged the isolated Bi atom in 11 SCF steps / 41 s, the same
+energy as the native multigrid reference (36 s). Open questions: section 10.
+
+## 10. Open questions (for future testing)
+
+These are about applying the pipeline, not about getting the codes to run — the
+container, multi-node launch and both RMG solvers are working. Note that this example's
+RMG runs use the pseudopotentials bundled with RMG (internal ONCV, `sg15`), which may
+not be what a production run uses; the first two items in particular should be
+revisited with the production pseudopotentials.
+
+- **Isolated-atom energies (MACE E0s).** Davidson does not converge the isolated Bi atom
+  (the energy oscillates by ~3 Ha); multigrid does, but on isolated Se multigrid
+  "converged" 2.43 eV *above* Davidson's solution (-9.3257 vs -9.4151 Ha), apparently
+  staying in the state of the starting guess. So the Bi E0 currently rests on multigrid
+  alone. Worth checking: spin polarisation, occupation smearing/mixing (commented-out
+  options in `DFT/vdW_quench.yml`), and a different `start_mode`, against an
+  independent reference. `converge_dft_data` applies one recipe per `directory`, so
+  isolated atoms with their own recipe mean a separate run on `DFT/isolated_elements`.
+- **pyRMG's node estimate is much too high** for these cells: 112 ranks (14 nodes) for
+  the 99-atom Bi54Se45 cell, which runs on 2 nodes, and 40 ranks for 11-atom cells that
+  run on one (default `electrons_per_gpu: 10`). `max_tasks_per_job` clamps it, and a
+  recipe's `allocated_nodes:` pins it, but the estimator itself (in pyRMG) needs tuning
+  before it can size large-allocation runs on its own.
+- **Davidson vs multigrid crossover.** Measured only for 11-12 atom cells, where
+  Davidson is 1.2-1.9x faster. The system size above which multigrid wins (the reason to
+  use RMG for hundreds to thousands of atoms) wasn't measured.
+- **Loop 2 with real UQ candidates.** The full loop and its resume were exercised on one
+  node, but RMG on loop-1 candidates was only run with a 3-step SCF cap (at default
+  `max_supercell_atoms: 100` they are ~99-atom cells needing 2+ nodes). Not yet done end
+  to end: converging those candidates, building the `uq_1` label, generation 2.
+- **Stress sign from RMG.** `rmg_dft.py` writes `stress_voigt` from the ASE calculator
+  (so ASE's sign convention, as MACE expects); not yet compared with known data on a
+  converged loop-2 candidate.
+- **`FF/mace_fit.py`'s batch-size clamp** was checked against real smoke-test inputs
+  (5 train / 1 valid config out of 6, matching MACE's own split), but not yet in a
+  complete fit.
+- **`hsaKmtSVMSetAttr failed.` warnings**: 4 per rank while `rmg-gpu` ran on the image's
+  ROCm, with no effect on speed or results; not checked whether they remain on the
+  host ROCm.
 
