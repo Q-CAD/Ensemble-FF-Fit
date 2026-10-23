@@ -274,5 +274,31 @@ show ranks join, memory fits and the per-step time, without converging.
   `hipInit(0)` before main. Test `flux_preinit_rmg.slurm` (5745915): hello
   + preload, RMG + preload on the 3-step-capped 99-atom case, and the 3
   inconclusive cases again with the Flux queue drained between runs.
+- **Preload result** (5745915, 2 nodes): `mpi_hello` + preload -> 16/16
+  ranks with a GPU, each node's 8 ranks on 8 distinct GCDs (PCI c1..de),
+  host and GPU-buffer Allreduce OK. **rmg-gpu + preload runs as ONE 2-node
+  job inside the container through Flux**: 16 PEs (4x2x2), one banner,
+  8 devices per node; energies match the native 2-node run to ~1e-4 Ha and
+  RMS[dV] exactly:
+  | | native srun | container + Flux + preload |
+  |---|---|---|
+  | step 0 (incl. setup) | 85 s (94 s scf time) | 136 s (152 s) |
+  | step 1 | 28.6 s, -4627.110131 Ha | 48.2 s, -4627.110279 Ha |
+  | step 2 | 30.9 s, -4626.822909 Ha | 61.2 s, -4626.822979 Ha |
+  ~1.6-2x slower per step. Each rank also logs `HSA exception:
+  hsaKmtSVMSetAttr failed.` 4 times (64 total; native: 0) -- non-fatal here.
+  The 3-step-capped run still hit the 480 s timeout in the post-SCF
+  force/stress/output stage (log ends at the stress tensor).
+- Retests with the queue drained: **`FI_HMEM=system` also fixes it**
+  (16/16 GPUs, no preload; but that mpi_hello then hit its 90 s timeout
+  after printing -- possible hang in MPI_Finalize, to check);
+  `FI_MR_ROCR_CACHE_MONITOR_ENABLED=0` and HSA_XNACK unset: 0 GPUs.
+  **Root cause narrowed to libfabric initialising its ROCr HMEM interface
+  during an inter-node MPI_Init, before HIP.** (Why only in the container
+  is still open: natively the same libfabric + Cray MPICH work -- the
+  container's ROCm 6.3.3 runtime vs host 6.3.1 is the obvious difference.)
+- Timing study `rmg_timing.slurm` (2-SCF-step cap): job 1 (5746040)
+  `base cpubind cpubind_numa`; job 2 `cpubind_gpubind cpubind_xnack0
+  cpubind_hmem native`.
 
 ## Phase 3: VASP on Frontier
