@@ -162,7 +162,7 @@ needs with `module load <your build modules>; ldd <rmg-gpu>`.
 | `error while loading shared libraries: ... cannot open shared object file` | library not bound / not on the path | add the bind (`launch_flux.slurm`) and directory (`RMG_LD_LIBRARY_PATH`) |
 | `HSA exception: hsaKmtSVMSetAttr failed` then `hipHostMalloc failed`, exit 137 | out of GPU memory: too few GPUs for the cell (happens natively too) | more ranks/nodes (`max_tasks_per_job`, `allocated_nodes`) or smaller cells |
 | `MPI_Init` abort `Unable to use a NIC_POLICY of 'NUMA'` (>1 node) | NIC policy | keep `MPICH_OFI_NIC_POLICY=BLOCK` (section 9) |
-| `rmg-gpu` hangs at start with an empty log (>1 node) | HIP sees no GPUs after a multi-node `MPI_Init` | keep `FI_HMEM=system` (section 9) |
+| `rmg-gpu` hangs at start with an empty log (>1 node) | HIP sees no GPUs after a multi-node `MPI_Init` — seen only with `rmg-gpu` on the image's ROCm | `RMG_ROCM` = its build ROCm; or add `FI_HMEM=system` to `rmg_container_env` (section 9) |
 
 A 4-line `HSA exception: hsaKmtSVMSetAttr failed.` per rank *without* a following error
 is harmless (seen with the image's ROCm; speed and results unaffected).
@@ -394,11 +394,11 @@ editing.
   controlled A/B, to be an actual regression here.
 - **RMG's `command` is a bare `{rmg_executable} {rmg_name}`** — no `srun`/`mpirun`/
   `flux run` wrapper. Flux owns launch semantics for every chore.
-- **Multi-node RMG needs `MPICH_OFI_NIC_POLICY=BLOCK`, `FI_HMEM=system`, and the
-  CPU/GPU layout above** — all already set; don't change them without reading
-  section 9. Symptoms if they're lost: `MPI_Init` aborts on >1 node (NUMA policy), or
-  `rmg-gpu` hangs at startup with an empty log because HIP sees no GPUs (FI_HMEM), or
-  runs ~25-100% slower (layout). `Resources(mpi=False)` is correct.
+- **Multi-node RMG needs `MPICH_OFI_NIC_POLICY=BLOCK`, its build ROCm (`RMG_ROCM`),
+  and the CPU/GPU layout above** — all already set; don't change them without reading
+  section 9. Symptoms if they're lost: `MPI_Init` aborts on >1 node (NUMA policy),
+  `rmg-gpu` hangs at startup with an empty log because HIP sees no GPUs (image ROCm),
+  or it runs ~25-100% slower (layout). `Resources(mpi=False)` is correct.
 - **MACE members with fewer training configs than `batch_size`** (common with small
   label combinations) used to die with `torch.cat(): expected a non-empty list of
   Tensors`; `FF/mace_fit.py` now shrinks `batch_size`/`valid_batch_size` to fit and
@@ -433,7 +433,7 @@ so Cray MPICH needs no PMI changes (unlike VASP on Perlmutter) and `mpi=False` i
 | Symptom (2 nodes, inside the container) | Cause | Fix (where) |
 |---|---|---|
 | `MPI_Init` aborts on every rank: `Unable to use a NIC_POLICY of 'NUMA'. Rank N is not confined to a single NUMA node` (1 node always worked) | Flux tasks aren't bound to one NUMA domain | `MPICH_OFI_NIC_POLICY=BLOCK` (`run_pipeline.py`, `rmg_container_env`) |
-| Ranks join, but HIP sees **0 GPUs** after `MPI_Init`; `rmg-gpu` hangs with an empty log; with GPU-aware MPI, `hsa_init ... HSA_STATUS_ERROR_OUT_OF_RESOURCES` | libfabric initialises its ROCm memory support during an inter-node `MPI_Init` (querying GPUs *before* `MPI_Init`, or `FI_HMEM=system`, both fix it) | `FI_HMEM=system` (same place); RMG uses host-buffer MPI |
+| Ranks join, but HIP sees **0 GPUs** after `MPI_Init`; `rmg-gpu` hangs with an empty log; with GPU-aware MPI, `hsa_init ... HSA_STATUS_ERROR_OUT_OF_RESOURCES` | libfabric initialises its ROCm memory support during an inter-node `MPI_Init` — breaks HIP when `rmg-gpu` runs on the **image's** ROCm (querying GPUs before `MPI_Init`, or `FI_HMEM=system`, worked around it) | run on the host ROCm it was built with (`RMG_ROCM`, step 3b): then no workaround is needed (25-atom cell, 2 nodes: 167 s without `FI_HMEM` vs 173 s with, same energy). Fallback: `FI_HMEM=system` in `rmg_container_env` |
 | Works, but 1.6-2x slower per SCF step than native `srun` | the Flux instance lacked cores 1-9 of each node, 6-core slices straddled L3/NUMA groups, GPUs handed out in index order (most ranks on a far GCD) | brokers with `srun --cpu-bind=none` (`launch_flux.slurm`); `cores_per_task: 7` + `controller_cores: 0` (config); closest GCD per rank (`rmg_dft.py`, `RMG_GPU_CLOSEST_GCDS`) |
 
 **Measured** (99-atom Bi54Se45 single point, davidson, 16 ranks on 2 nodes, same nodes):
@@ -456,10 +456,13 @@ GPUs (restricting it changes neither correctness nor speed), Slurm/PALS variable
 leaking into the container (none reach Flux tasks), the container's ROCm version for the
 HSA crash (that crash is RMG running out of GPU memory — it happens natively too).
 
-**Still open:** why libfabric's ROCm initialisation only breaks HIP inside the
-container (host vs container ROCm runtime is the obvious difference); pyRMG's node
-estimate is far above what fits (14 nodes for the 99-atom cell, which runs on 2);
-each rank logs `HSA exception: hsaKmtSVMSetAttr failed.` 4 times in the container
+**Resolved later:** libfabric's ROCm initialisation only broke HIP while `rmg-gpu` ran
+on the image's ROCm 6.3.3; on its build ROCm (step 3b) multi-node runs need no
+`FI_HMEM` override, and VASP (on its own host ROCm) never did.
+
+**Still open:** pyRMG's node estimate is far above what fits (14 nodes for the 99-atom
+cell, which runs on 2); with the image's ROCm each rank logged `HSA exception:
+hsaKmtSVMSetAttr failed.` 4 times
 (harmless to speed or results). Multigrid in the container: works with the host ROCm
 (step 3b); 2 nodes x 8 ranks via `converge_dft_data` converged the isolated Bi atom in
 11 SCF steps / 41 s, the same energy as the native multigrid reference (36 s).

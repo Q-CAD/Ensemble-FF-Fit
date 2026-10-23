@@ -99,10 +99,16 @@ energy is pymatgen's `Vasprun.final_energy` (-336.41535207 eV here, the σ→0 v
 in the Perlmutter example. For scale: Perlmutter (`vasp/6.4.2-gpu`, 4 A100s) took 106 s
 on its 80-atom loop candidates, 84 s on 2 nodes.
 
-Isolated atoms (20 Å box, 10×10×10 k-mesh from the recipe's `grid_density: 1000`),
-native, 1 node, with the stack limit raised (below): Pd 36 electronic steps / 189 s, Se
-23 / 151 s (Perlmutter: 225 s / 154 s). **Not yet run through the pipeline with
-`vasp_dft.py`'s stack fix** — that fix was added after the last test job.
+Isolated atoms (20 Å box, 10×10×10 k-mesh from the recipe's `grid_density: 1000`), 1
+node, 8 ranks, with the stack limit raised (below):
+
+| | native `srun` | container, `converge_dft_data` |
+|---|---|---|
+| Pd | 36 electronic steps, 189 s | 36 steps, 229 s, same energy |
+| Se | 23 steps, 151 s | 23 steps, 183 s |
+
+(Perlmutter: 225 s / 154 s.) Without the stack fix both segfault before the first
+electronic step, natively and in the container.
 
 ## 6. Differences from the Perlmutter example, and pitfalls
 
@@ -115,9 +121,9 @@ native, 1 node, with the stack limit raised (below): Pd 36 electronic steps / 18
 - **`MPICH_OFI_NIC_POLICY=BLOCK`**, not `NUMA`: under Flux, ranks aren't confined to one
   NUMA domain and Cray MPICH aborts `MPI_Init` on >1 node with `NUMA`
   (`RMG_MACE_ASE` README section 9).
-- **GPU-aware MPI works across nodes as is.** RMG needed `FI_HMEM=system` (libfabric's
-  ROCm initialisation during a multi-node `MPI_Init` otherwise left HIP with no GPUs);
-  VASP doesn't — it runs entirely on the host ROCm it was built with.
+- **GPU-aware MPI works across nodes as is**, because `vasp_std` runs entirely on the
+  host ROCm it was built with. (RMG, while it ran on the image's ROCm, lost its GPUs
+  after a multi-node `MPI_Init` and needed `FI_HMEM=system`; on its build ROCm it doesn't.)
 - **`set_gpu_affinity=False`**: Flux's GPU affinity hands GPUs out in index order, which
   would clash with `vasp_dft.py`'s per-rank `ROCR_VISIBLE_DEVICES` (and put most ranks
   on a far GCD).
@@ -127,7 +133,9 @@ native, 1 node, with the stack limit raised (below): Pd 36 electronic steps / 18
   count (even 1), with Γ-only k-points, with `vasp_gam`, and with `vasp/6.6.0-gpu`;
   `LREAL`, `NBANDS`, `ISPIN`, `IVDW`, `KPAR` make no difference, a 10 Å box runs.
   With `ulimit -s unlimited` it converges. `vasp_dft.py` raises `vasp_std`'s stack
-  limit to the hard limit (unlimited on Frontier) before starting it.
+  limit to the hard limit before starting it — inside Flux tasks the soft limit is
+  300 MB and the hard limit unlimited, so no privileges are needed (confirmed through
+  the pipeline: both isolated atoms converge).
 - **`HSA_XNACK=0`** for `vasp_std` (the image sets 1 for LAMMPS; native runs have it unset).
 - Stress sign: `vasp_dft.py` negates pymatgen's (VASP, positive-compressive) stress into
   ASE/MACE's convention, as on Perlmutter.

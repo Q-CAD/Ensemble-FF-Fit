@@ -123,10 +123,11 @@ def rmg_container_env(cores_per_task, rmg_num_threads):
     Multi-node (README.md section 9): MPICH_OFI_NIC_POLICY must
     not be NUMA -- Flux tasks aren't confined to one NUMA domain the way
     srun-bound ones are, and Cray MPICH then aborts MPI_Init on >1 node.
-    FI_HMEM=system stops libfabric initialising its ROCr GPU-memory support
-    during an inter-node MPI_Init, which inside this container otherwise
-    leaves HIP seeing no GPUs at all (rmg-gpu hangs at startup); RMG uses
-    host-buffer MPI (MPICH_GPU_SUPPORT_ENABLED=0), so nothing is lost.
+    No FI_HMEM override: with rmg-gpu on the image's own ROCm, libfabric's
+    ROCr initialisation during an inter-node MPI_Init left HIP seeing no
+    GPUs (rmg-gpu hung at startup) and FI_HMEM=system was needed; on the
+    host ROCm it was built with (RMG_ROCM) that no longer happens -- add
+    'FI_HMEM': 'system' back here if you ever run it on the image's ROCm.
     """
     return {
         'PYTHONPATH': chore_pythonpath(),
@@ -135,7 +136,6 @@ def rmg_container_env(cores_per_task, rmg_num_threads):
         'RMG_NUM_THREADS': str(rmg_num_threads),
         'MPICH_OFI_NIC_POLICY': 'BLOCK',
         'MPICH_GPU_SUPPORT_ENABLED': '0',
-        'FI_HMEM': 'system',
         'RMG_GPU_CLOSEST_GCDS': FRONTIER_CLOSEST_GCDS,
         'LD_LIBRARY_PATH': RMG_LD_LIBRARY_PATH,
     }
