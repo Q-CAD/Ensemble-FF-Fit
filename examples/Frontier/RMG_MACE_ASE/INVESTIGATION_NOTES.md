@@ -315,5 +315,27 @@ show ranks join, memory fits and the per-step time, without converging.
   `cpubind_gpubind` (one visible GPU per rank), `cpubind_hmem`
   (FI_HMEM=system instead of the preload); per-case launch/task/RMG-start
   timeline recorded.
+- **Job 2 results** (5746452, same 2 nodes for all three):
+  | case | step 0 | step 1 | total, exit |
+  |---|---|---|---|
+  | native srun -c7 --gpu-bind=closest | 83.9 s | 34.2 s | 342 s, rc 0 |
+  | flux cpubind_gpubind (preload) | 101.1 s | 42.4 s | 368 s, rc 0 |
+  | flux cpubind_hmem (FI_HMEM=system, no preload) | 101.2 s | 42.7 s | 378 s, rc 0 |
+  vs unbound flux (5745915): 136 s / 48-61 s. **CPU binding closes most of
+  the gap (now ~1.24x per step)**; one visible GPU per rank adds nothing
+  measurable and doesn't remove the 4 hsaKmtSVMSetAttr warnings per rank.
+  FI_HMEM=system is as fast as the preload, and RMG exits cleanly with it.
+  Startup: tasks -> RMG `Start time` ~1:45 in both flux cases.
+- **Why the rest of the gap** (per-rank bind files, node 1):
+  native gives each rank one whole L3 group (1-7, 9-15, ..., 57-63) and
+  its closest GCD (4,5,2,3,6,7,0,1). Under Flux: (1) the instance's cpuset
+  starts at core 10 -- cores 1-9 missing, inherited from the brokers' srun
+  step; (2) Flux's 6-core slices straddle L3/NUMA groups (rank 2:
+  23,25-29; rank 3: 30-31,33-36); (3) gpu-affinity hands out GCD 0..7 in
+  order, so e.g. rank 0 (cores 10-15, nearest GCD 5) gets GCD 0.
+- **Job 3** (5746806): brokers started with `srun --cpu-bind=none`;
+  `c7_closest` (-c7 per rank = one L3 group, ROCR_VISIBLE_DEVICES = GCD
+  closest to the rank's first core), `c6_closest` (-c6, same GPU rule --
+  what fits MatEnsemble's 56N-1 core budget), and native on the same nodes.
 
 ## Phase 3: VASP on Frontier

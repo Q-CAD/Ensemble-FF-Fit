@@ -15,6 +15,13 @@
 #   cpubind_xnack0   cpubind + HSA_XNACK=0
 #   cpubind_hmem     cpubind, NO preload, FI_HMEM=system instead (libfabric
 #                    skips ROCr -- the other way found to keep HIP working)
+#   c7_closest       7 cores per rank (= one L3 group, like native srun -c7)
+#                    + each rank's GPU = the GCD closest to its cores
+#   c6_closest       6 cores per rank (leaves room for MatEnsemble's broker
+#                    core) + closest GCD
+# BROKER_CPU_BIND (default: Slurm's) is passed as --cpu-bind to the srun that
+# starts the Flux brokers -- with Slurm's default, the instance's cpuset on
+# each node starts at core 10 (cores 1-9 missing; rmgtiming 5746452).
 #   native           srun outside the container (needs nothing from Flux)
 
 #SBATCH -A mat201
@@ -30,6 +37,7 @@ SIF="${SIF:-/lustre/orion/mat201/scratch/rjmorelock/MatEnsemble_Update/images/ma
 RMG="${RMG:-/lustre/orion/mat201/scratch/rjmorelock/MatEnsemble2/rmgdft/build-frontier-gpu/rmg-gpu}"
 RMG_CASE="${RMG_CASE:?set RMG_CASE}"
 RMG_TIMEOUT="${RMG_TIMEOUT:-300}"
+BROKER_CPU_BIND="${BROKER_CPU_BIND:-}"
 CASES="${CASES:-base cpubind cpubind_numa}"
 OUT="${OUT:-$PWD/rmgtiming-${SLURM_JOB_ID}}"
 N=$SLURM_NNODES; NP=$((N * 8))
@@ -41,6 +49,15 @@ PRE=$HERE/libhip_preinit.so
 cat > "$OUT/task.sh" <<'EOF'
 #!/bin/bash
 r=${FLUX_TASK_RANK:-${SLURM_PROCID:-x}}
+if [[ "${GPU_CLOSEST:-0}" == 1 ]]; then
+    # Frontier node: L3 group k = cores 8k..8k+7 (core 8k reserved); the GCD
+    # attached closest to each group (OLCF Frontier user guide, and native
+    # srun --gpu-bind=closest above): 1-7->4 9-15->5 17-23->2 25-31->3
+    # 33-39->6 41-47->7 49-55->0 57-63->1. Pick by this task's first core.
+    first=$(grep Cpus_allowed_list /proc/self/status | cut -f2 | cut -d, -f1 | cut -d- -f1)
+    map=(4 5 2 3 6 7 0 1)
+    export ROCR_VISIBLE_DEVICES=${map[$(( (first % 64) / 8 ))]}
+fi
 echo "rank $r host $(hostname) cpus $(grep Cpus_allowed_list /proc/self/status | cut -f2) mems $(grep Mems_allowed_list /proc/self/status | cut -f2) ROCR=${ROCR_VISIBLE_DEVICES:--} CUDA=${CUDA_VISIBLE_DEVICES:--} HIP=${HIP_VISIBLE_DEVICES:--}" > "$BIND_OUT.$r"
 exec "$@"
 EOF
@@ -51,7 +68,7 @@ report() {  # case rc t0 t1
     echo "== $1: rc=$2 wall=$(( $4 - $3 ))s  $(grep -m1 -o '[0-9]* MPI processes/image' $l 2>/dev/null)  banners: $(grep -c 'R   M   G' $d/rmg.stdout 2>/dev/null)  SCF steps: $(grep -c 'TOTAL ENERGY' $l 2>/dev/null)  hsaKmtSVMSetAttr: $(grep -c hsaKmtSVMSetAttr $d/rmg.stdout 2>/dev/null)  MPI_Init errors: $(grep -c 'Fatal error in PMPI_Init' $d/rmg.stdout 2>/dev/null)"
     grep "quench:" "$l" 2>/dev/null | sed 's/^/   /'
     grep "TOTAL ENERGY" "$l" 2>/dev/null | tail -2 | sed 's/^/   /'
-    cat "$d"/bind.* 2>/dev/null | sort -k2 -n | sed -n '1p;2p;9p' | sed 's/^/   bind: /'
+    for r in 0 1 2 3 4 5 6 7; do cut -d' ' -f1-6,9-10 "$d/bind.$r" 2>/dev/null; done | sed 's/^/   bind: /'
     [[ -f "$d/timeline" ]] && sed 's/^/   /' "$d/timeline"
 }
 newdir() { rm -rf "$OUT/$1"; mkdir -p "$OUT/$1"; cp "$RMG_CASE"/rmg_input "$RMG_CASE"/*.upf "$OUT/$1/"; }
@@ -74,15 +91,18 @@ if [[ -n "${FLUX_CASES// /}" ]]; then
 cat > "$OUT/inner.sh" <<EOF
 cd "$OUT"
 flux resource list | sed -n 2p
-base="-N$N -n$NP -c6 -g1 --env=LD_LIBRARY_PATH=$RMG_LDP --env=LD_PRELOAD=$PRE --env=MPICH_GPU_SUPPORT_ENABLED=0 --env=OMP_PROC_BIND=false --env=OMP_NUM_THREADS=6 --env=RMG_NUM_THREADS=5"
+echo "instance cpuset on this node: \$(grep Cpus_allowed_list /proc/self/status | cut -f2)"
+base="-N$N -n$NP -g1 --env=LD_LIBRARY_PATH=$RMG_LDP --env=LD_PRELOAD=$PRE --env=MPICH_GPU_SUPPORT_ENABLED=0 --env=OMP_PROC_BIND=false --env=OMP_NUM_THREADS=6 --env=RMG_NUM_THREADS=5"
 for c in $FLUX_CASES; do
     case \$c in
-        base)            extra="--env=MPICH_OFI_NIC_POLICY=BLOCK" ;;
-        cpubind)         extra="--env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task" ;;
-        cpubind_numa)    extra="--env=MPICH_OFI_NIC_POLICY=NUMA -o cpu-affinity=per-task" ;;
-        cpubind_gpubind) extra="--env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task -o gpu-affinity=per-task" ;;
-        cpubind_xnack0)  extra="--env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task --env=HSA_XNACK=0" ;;
-        cpubind_hmem)    extra="--env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task --env=FI_HMEM=system --env=LD_PRELOAD=" ;;
+        base)            extra="-c6 --env=MPICH_OFI_NIC_POLICY=BLOCK" ;;
+        cpubind)         extra="-c6 --env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task" ;;
+        cpubind_numa)    extra="-c6 --env=MPICH_OFI_NIC_POLICY=NUMA -o cpu-affinity=per-task" ;;
+        cpubind_gpubind) extra="-c6 --env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task -o gpu-affinity=per-task" ;;
+        cpubind_xnack0)  extra="-c6 --env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task --env=HSA_XNACK=0" ;;
+        cpubind_hmem)    extra="-c6 --env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task --env=FI_HMEM=system --env=LD_PRELOAD=" ;;
+        c7_closest)      extra="-c7 --env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task --env=GPU_CLOSEST=1" ;;
+        c6_closest)      extra="-c6 --env=MPICH_OFI_NIC_POLICY=BLOCK -o cpu-affinity=per-task --env=GPU_CLOSEST=1" ;;
         *) echo "unknown case \$c"; continue ;;
     esac
     flux cancel --all >/dev/null 2>&1; flux queue idle --timeout=180s >/dev/null 2>&1
@@ -95,7 +115,7 @@ for c in $FLUX_CASES; do
     cd "$OUT"
 done
 EOF
-srun -N "$N" -n "$N" --external-launcher --gpu-bind=closest --mpi=pmi2 \
+srun -N "$N" -n "$N" --external-launcher --gpu-bind=closest --mpi=pmi2 ${BROKER_CPU_BIND:+--cpu-bind=$BROKER_CPU_BIND} \
     apptainer exec --bind /opt/cray/:/opt/cray --bind /usr/lib64/:/opt/cray_extra/lib64 --bind /var/spool/slurmd \
     "$SIF" flux start bash "$OUT/inner.sh"
 for c in $FLUX_CASES; do
