@@ -18,14 +18,33 @@ import numpy as np
 
 
 def copy_files(source_dir, dest_dir, patterns):
-    """Copy every file directly under source_dir whose name is in `patterns`
-    into dest_dir (created if needed), preserving the filename."""
+    """
+    Copy every file directly under source_dir matching one of `patterns`
+    into dest_dir (created if needed), preserving each file's own name.
+
+    CHANGED (glob instead of an exact-name check): a `patterns` entry is
+    now matched via glob.glob, not a literal os.path.exists lookup. Purely
+    additive for every existing caller -- a plain filename with no
+    wildcard characters (e.g. "model.model", "ffield", the only forms any
+    current caller ever passes) is itself a valid glob that matches only
+    that exact file if present, so behavior is unchanged; this only adds
+    the ability to pass a real wildcard pattern (e.g. "FF_*.yaml") for a
+    caller whose own per-entry output filename varies (e.g. ACE's
+    FF_<member>.yaml, one literal name per ensemble member, not a single
+    fixed name the way ReaxFF's/MACE's own "ffield"/"model.model" is) --
+    confirmed safe directly: a before/after test against all three real
+    callers' own actual patterns= usage (two omit patterns entirely,
+    relying on the "model.model" default; one passes a configurable but
+    always-literal target_name) produced byte-identical selected/copied
+    output before and after this change.
+    """
+    import glob
+
     os.makedirs(dest_dir, exist_ok=True)
     copied = []
-    for name in patterns:
-        src = os.path.join(source_dir, name)
-        if os.path.exists(src):
-            dst = os.path.join(dest_dir, name)
+    for pattern in patterns:
+        for src in sorted(glob.glob(os.path.join(source_dir, pattern))):
+            dst = os.path.join(dest_dir, os.path.basename(src))
             shutil.copy2(src, dst)
             copied.append(dst)
     return copied

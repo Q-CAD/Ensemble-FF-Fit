@@ -176,6 +176,8 @@ def rank_force_fields_combined(
     validation_ff_dct, validation_reference_dct,
     training_ff_dct, training_reference_dct,
     validation_force_weight=1.0, training_force_weight=1.0,
+    validation_energy_weight=None, training_energy_weight=None, energy_per_atom=False,
+    force_aggregation="structure_mean",
     training_relative_energy_dct=None, training_relative_energy_reference_dct=None,
     validation_relative_energy_dct=None, validation_relative_energy_reference_dct=None,
     training_relative_energy_weight=1.0, validation_relative_energy_weight=1.0,
@@ -199,6 +201,39 @@ def rank_force_fields_combined(
       SAME get_divisors-based method expressible for AIMD trajectories
       too (subtract: [frame 0], get_divisors: True). Removed so training
       and validation now share one consistent energy-comparison method.
+    - validation_energy_weight/training_energy_weight (ADDED, optional --
+      a DIFFERENT, simpler mechanism than the relative-energy one above,
+      for callers whose own energy quantity is already directly
+      comparable without stoichiometric normalization, e.g. ACE's
+      energy_corrected -- see FF_fitting's own rank_ace_validation
+      precedent, which validates against absolute energy_corrected
+      directly by design). `None` (the default for BOTH) -- not 0.0 --
+      means "omit the energy term and its table column entirely," the
+      SAME sentinel convention already used by the relative-energy dcts
+      below, so existing callers that never pass these two new params get
+      bit-for-bit identical output (verified directly: real synthetic
+      before/after comparison against this exact function, both with and
+      without relative-energy dcts set, confirmed byte-identical).
+      energy_per_atom (default False, see get_ff_deviations' own
+      docstring) normalizes the energy RMSE by atom count before
+      weighting -- needed for an eV/atom-style convention, irrelevant
+      (and ignored) when both energy weights are None.
+    - force_aggregation (ADDED, default "structure_mean" -- preserves
+      existing behavior exactly): which pooling convention computes
+      mean_val_force/mean_train_force. "structure_mean" (the default, via
+      get_ff_deviations) takes one RMSE per structure then averages those
+      uniformly across structures. "atom_component_pooled" (via the new
+      get_pooled_force_rmse) instead pools every force component from
+      every atom of every structure into one flat array before a single
+      RMSE -- implicitly atom-count-weighted, and the convention pyace/
+      tensorpotential's own fitting-time test_metrics.txt uses. These are
+      NOT interchangeable (a real, confirmed ~25-35% discrepancy between
+      them was found downstream -- see get_pooled_force_rmse's own
+      docstring) -- pick whichever one your own fitting-time metric
+      actually uses if you want this ranking's numbers to line up with it.
+      More conventions can be added here as new elif branches without
+      touching the default path, for other MLIP/interatomic-potential
+      backends with their own reporting conventions.
     - training_relative_energy_dct/training_relative_energy_reference_dct
       and validation_relative_energy_dct/validation_relative_energy_
       reference_dct (optional): {label: {entry_name: {target:
@@ -228,10 +263,43 @@ def rank_force_fields_combined(
     # validation_force_weight/training_force_weight args are applied
     # afterward, once, when combining components -- same "raw first,
     # weight once at the end" pattern as format_ranking_table's own
-    # raw_deviation_dct.
-    val_deviation_dct = get_ff_deviations(validation_ff_dct, validation_reference_dct, 1.0, 1.0, reference_label=reference_label)
-    train_deviation_dct = get_ff_deviations(training_ff_dct, training_reference_dct, 1.0, 1.0, reference_label=reference_label)
+    # raw_deviation_dct. energy_per_atom is passed through unconditionally
+    # (cheap either way -- get_ff_deviations always computes an energy
+    # term as a byproduct of computing forces, whether or not this
+    # function goes on to use it) so val_deviation_dct/train_deviation_dct
+    # carry the right (normalized-or-not) energy value regardless of
+    # whether the energy weights below are None.
+    if force_aggregation not in ("structure_mean", "atom_component_pooled"):
+        raise ValueError(
+            f"rank_force_fields_combined: force_aggregation={force_aggregation!r} is not implemented -- "
+            f"expected 'structure_mean' or 'atom_component_pooled' (see this function's own docstring).")
 
+    # weight=1.0/1.0 here (not the caller's own weights) -- these calls
+    # produce RAW, unweighted per-component RMSE; this function's own
+    # validation_force_weight/training_force_weight args are applied
+    # afterward, once, when combining components -- same "raw first,
+    # weight once at the end" pattern as format_ranking_table's own
+    # raw_deviation_dct. energy_per_atom is passed through unconditionally
+    # (cheap either way -- get_ff_deviations always computes an energy
+    # term as a byproduct of computing forces, whether or not this
+    # function goes on to use it) so val_deviation_dct/train_deviation_dct
+    # carry the right (normalized-or-not) energy value regardless of
+    # whether the energy weights below are None. Needed for ENERGY (always)
+    # and for FORCE too when force_aggregation=="structure_mean" (the
+    # default) -- when force_aggregation=="atom_component_pooled" instead,
+    # get_pooled_force_rmse (below) supplies the force values directly and
+    # this call's own force values are simply unused for that part.
+    val_deviation_dct = get_ff_deviations(validation_ff_dct, validation_reference_dct, 1.0, 1.0,
+                                           reference_label=reference_label, energy_per_atom=energy_per_atom)
+    train_deviation_dct = get_ff_deviations(training_ff_dct, training_reference_dct, 1.0, 1.0,
+                                             reference_label=reference_label, energy_per_atom=energy_per_atom)
+
+    if force_aggregation == "atom_component_pooled":
+        pooled_val_force = get_pooled_force_rmse(validation_ff_dct, validation_reference_dct, reference_label)
+        pooled_train_force = get_pooled_force_rmse(training_ff_dct, training_reference_dct, reference_label)
+
+    has_validation_energy = validation_energy_weight is not None
+    has_training_energy = training_energy_weight is not None
     has_training_rel_e = training_relative_energy_dct is not None
     has_validation_rel_e = validation_relative_energy_dct is not None
 
@@ -247,8 +315,12 @@ def rank_force_fields_combined(
         val_images = [i for md in val_deviation_dct[label].values() for i in md.values()]
         train_images = [i for md in train_deviation_dct[label].values() for i in md.values()]
 
-        mean_val_force = sum((i['fx'] + i['fy'] + i['fz']) / 3 for i in val_images) / len(val_images)
-        mean_train_force = sum((i['fx'] + i['fy'] + i['fz']) / 3 for i in train_images) / len(train_images)
+        if force_aggregation == "atom_component_pooled":
+            mean_val_force = pooled_val_force[label]
+            mean_train_force = pooled_train_force[label]
+        else:
+            mean_val_force = sum((i['fx'] + i['fy'] + i['fz']) / 3 for i in val_images) / len(val_images)
+            mean_train_force = sum((i['fx'] + i['fy'] + i['fz']) / 3 for i in train_images) / len(train_images)
 
         combined = (validation_force_weight * mean_val_force
                     + training_force_weight * mean_train_force)
@@ -258,6 +330,15 @@ def rank_force_fields_combined(
             'mean_train_force': mean_train_force,
             'combined': combined,
         }
+
+        if has_validation_energy:
+            mean_val_energy = sum(i['energy'] for i in val_images) / len(val_images)
+            components[label]['mean_val_energy'] = mean_val_energy
+            components[label]['combined'] += validation_energy_weight * mean_val_energy
+        if has_training_energy:
+            mean_train_energy = sum(i['energy'] for i in train_images) / len(train_images)
+            components[label]['mean_train_energy'] = mean_train_energy
+            components[label]['combined'] += training_energy_weight * mean_train_energy
 
         if has_training_rel_e:
             components[label]['mean_train_relative_energy'] = training_rel_e_scores[label]
@@ -277,6 +358,10 @@ def rank_force_fields_combined(
     # relative-energy dcts were actually passed -- keeps the table/header
     # in sync without hardcoding which columns exist.
     extra_columns = []
+    if has_validation_energy:
+        extra_columns.append(('mean_val_energy', 'val_energy_dev', 24))
+    if has_training_energy:
+        extra_columns.append(('mean_train_energy', 'train_energy_dev', 24))
     if has_training_rel_e:
         extra_columns.append(('mean_train_relative_energy', 'train_rel_e_dev_kcalmol', 24))
     if has_validation_rel_e:
@@ -328,16 +413,81 @@ def assert_comparable_dicts(
                         f"for md_name '{md_name}'"
                     )
 
+def get_pooled_force_rmse(ff_dct, reference_dct, reference_label="DFT"):
+    """
+    ADDED -- a second, genuinely different force-deviation convention from
+    get_ff_deviations' own ("structure_mean": one RMSE per structure,
+    averaged uniformly across structures). This one pools every individual
+    force COMPONENT (fx, fy, fz) from every atom of every structure for a
+    given label into ONE flat array, then takes a single RMSE over that --
+    implicitly atom-count-weighted (a 200-atom structure contributes 600
+    values to the pool, a 20-atom one only 60), NOT structure-count-weighted.
+
+    Exists because these two conventions are NOT interchangeable -- a real,
+    confirmed ~25-35% discrepancy between them was found and documented by
+    a downstream caller (the companion Pd-Se ACE-fitting pipeline's own
+    rank_ace_validation) comparing against pyace/tensorpotential's own
+    fitting-time test_metrics.txt, which uses THIS pooling convention, not
+    get_ff_deviations' own. Reproduces tensorpotential.fitmetrics.py's own
+    compute_metrics pooling exactly (read directly from this project's own
+    TensorPotential fork, not reimplemented from a guess) -- the companion
+    pipeline's own version of this exact logic was independently verified
+    to reproduce real test_metrics.txt rmse_f_comp to 8 significant figures.
+
+    Added as a SEPARATE function rather than a mode on get_ff_deviations
+    itself: that function's existing per-(md_name, md_image) return shape
+    is relied on by other callers (e.g. write_per_structure_force_
+    deviations) that need genuinely PER-STRUCTURE values -- pooling
+    everything into one number per label doesn't fit that shape at all, so
+    reusing it as a parameterized mode would mean two incompatible return
+    shapes behind one signature. This function has a deliberately narrower,
+    single-purpose contract instead: returns {label: rmse_force_pooled}.
+
+    Expected to grow more pooling/aggregation conventions over time (this
+    project's own anticipated use: extending this ranking to other MLIP/
+    interatomic-potential backends, which may report deviations via yet
+    other conventions) -- see rank_force_fields_combined's own
+    force_aggregation parameter, which dispatches to whichever convention
+    is requested rather than hardcoding one.
+    """
+    assert_comparable_dicts(ff_dct, reference_dct, reference_label)
+    ref_root = reference_dct[reference_label]
+
+    out = {}
+    for label, md_dct in ff_dct.items():
+        df_components = []
+        for md_name, image_dct in md_dct.items():
+            for image, props in image_dct.items():
+                ref_props = ref_root[md_name][image]
+                for axis in ('fx', 'fy', 'fz'):
+                    df_components.append(np.asarray(ref_props[axis]) - np.asarray(props[axis]))
+        df_components = np.concatenate(df_components)
+        out[label] = float(np.sqrt(np.mean(df_components ** 2)))
+    return out
+
+
 def get_ff_deviations(
     ff_dct,
     reference_dct,
     energy_weight,
     force_weight,
     reference_label="DFT",
+    energy_per_atom=False,
 ):
     """
     Compute weighted energy + force deviations of each FF
     relative to a reference.
+
+    energy_per_atom (ADDED, default False -- preserves every existing
+    caller's behavior unchanged): if True, the energy term is normalized
+    by atom count (len(ref_dct["fx"]), the same per-structure atom count
+    the force arrays already imply -- no separate atom-count field needed)
+    before computing RMSE, i.e. RMSE(ref_energy/natoms, ff_energy/natoms)
+    instead of RMSE(ref_energy, ff_energy). Needed by callers (e.g. ACE
+    validation) whose own energy convention is already per-atom
+    (energy_corrected/natoms) throughout, unlike ReaxFF's own raw total-
+    energy convention, which this function's default (False) still matches
+    exactly.
     """
     assert_comparable_dicts(ff_dct, reference_dct, reference_label)
 
@@ -355,9 +505,13 @@ def get_ff_deviations(
                 ref_dct = ref_root[md_name][md_image]
 
                 # Scalars
+                ref_energy, ff_energy = ref_dct["energy"], i_dct["energy"]
+                if energy_per_atom:
+                    natoms = len(ref_dct["fx"])
+                    ref_energy, ff_energy = ref_energy / natoms, ff_energy / natoms
                 w_e = energy_weight * root_mean_squared_error(
-                    [ref_dct["energy"]],
-                    [i_dct["energy"]],
+                    [ref_energy],
+                    [ff_energy],
                 )
 
                 # Forces (arrays)
