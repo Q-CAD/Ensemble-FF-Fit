@@ -1,0 +1,692 @@
+# MACE -> ACE -> LAMMPS distillation example config.
+#
+# This file is built up incrementally alongside run_pipeline.py --
+# teacher_preparation and the 4 training-data-generation tiers exist so
+# far. ACE fitting/validation stages aren't ported yet. See README.md for
+# the planned full stage list.
+#
+# scale: smoke_test (default) or full -- read by generate_structures_*'s
+# own stage_key handler to pick between each generator's
+# generator_args_smoke_test/generator_args_full block. Does NOT affect MD
+# step counts (nsteps/frequency in the in.md_*.json recipe files are
+# already small enough for a quick smoke run -- bump them up by hand for
+# a genuine full-scale run; see each recipe file's own comment).
+scale: smoke_test
+
+# Stage: teacher_preparation. Converts your own already fine-tuned MACE
+# model to LAMMPS's MLIAP format. Fine-tuning itself is a separate, prior
+# step this example does not repeat -- source_model must point at a model
+# you've already produced (see README.md for pointers on that workflow).
+teacher_preparation:
+  # Point this at your own fine-tuned MACE model -- no default is provided
+  # deliberately, this must be your own file, not one shipped with the
+  # example (generated outputs like fitted/converted models are excluded
+  # from this repo, see .gitignore). Anchored (&fine_tuned_mace_model) so
+  # every ASE stage's own foundation_model below can reference the SAME raw
+  # checkpoint via *fine_tuned_mace_model -- confirmed directly (this
+  # session, against a real interactive allocation) that pointing those at
+  # dest_root's own LAMMPS-MLIAP-converted output instead, as an earlier
+  # version of this file did, breaks every one of them: ase_mace.py's
+  # MACECalculator needs the original torch checkpoint, not the
+  # mace_create_lammps_model-converted LAMMPS_MLIAP_MACE object (which has
+  # no .to(), so MACECalculator.__init__ raises AttributeError outright).
+  # Converting to LAMMPS's own format is ONLY correct for an actual LAMMPS
+  # pair_style mliap run (mace_structural_stability_screening's own
+  # foundation_model, below, which is genuinely LAMMPS-side).
+  source_model: &fine_tuned_mace_model /path/to/your/fine_tuned_mace_model.model
+  dest_root: MACE/teacher/force_fields
+  target_name: model-mliap_lammps.pt
+
+# ===========================================================================
+# Training data generation -- 4 tiers, each a generate_structures_* +
+# run_md_* + run_single_points_* trio (plus one downselect_structures_*
+# between tier 1 and tier 2). See generate_structures's own docstring in
+# run_pipeline.py for why this is ONE generic function across all 4
+# generator variants below (no per-generator parameter knowledge in code).
+# ===========================================================================
+
+# Tier 1: random crystals across a composition sweep (pyxtal), plus the
+# real-phase validation structures (generate_validation_structures, below
+# -- a separate stage since the MP query isn't a swappable "generator" the
+# way the others are, see that stage's own docstring).
+generate_structures_tier1:
+  generation_task: MACE/structures/generate_training_tier1.py
+  generation_entry_point: generate_pyxtal_structures
+  # smoke_test: ~20 structures (2 compositions x 2 space groups x 5 seeds),
+  # runs in a couple minutes. full: the live project's own original sweep.
+  generator_args_smoke_test:
+    output_root: MACE/structures/training
+    compositions: [[1, 1], [2, 3]]
+    space_groups: [1, 139]
+    seeds: [0, 1, 2, 3, 4]
+  generator_args_full:
+    output_root: MACE/structures/training
+    compositions: [[1, 1], [1, 2], [2, 1], [2, 3], [3, 2]]
+    space_groups: [1, 2, 99, 139, 225]
+    seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+# Validation structures: real Pd-Se compounds pulled from the Materials
+# Project. Requires MP_API_KEY in your environment -- see README.md's
+# Prerequisites section. field_order/max_atoms match mp_query_cli.py's own
+# defaults; chemsys is this example's own (swap for your own system).
+generate_validation_structures:
+  validation_output_root: MACE/structures/validation
+  # Point this at wherever your own Ensemble-FF-Fit checkout lives at
+  # runtime (mp_query_cli.py is resolved relative to it) -- not
+  # necessarily this example's own parent directory.
+  ensemble_fffit_root: /path/to/your/Ensemble-FF-Fit
+  mp_query:
+    chemsys: [Pd-Se]
+
+# Stage: single_points_validation. Labels generate_validation_structures'
+# own raw POSCARs with the teacher MACE model -- a gap found this pass
+# (build_ff_inputs/prepare_ace_validation_structures both already assumed
+# MACE/single_points/structures/validation existed; nothing had produced it
+# yet). No in_file needed -- plain single points, no MD-style recipe.
+single_points_validation:
+  structures_root: MACE/structures/validation
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace.py
+  entry_point: run_ase_single_points
+  output_root: MACE/single_points/structures/validation
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# Stage: generate_isolated_elements. Writes one single-atom-in-a-box POSCAR
+# per element -- the isolated-atom E0 reference structures build_ff_inputs/
+# downselect_structures_tier2 both already require
+# (MACE/single_points/structures/isolated_elements). GAP FOUND THIS PASS
+# (confirmed directly, against a real interactive allocation): before this
+# stage existed, there was no automated way to produce that tree at all --
+# a user had to supply it by hand. `elements` is anchored
+# (&target_elements) here, not re-typed at build_ff_inputs.elements below --
+# one authoritative place for this example's own element set, not
+# re-derived by scanning MACE/structures/{training,validation} (cost grows
+# with every tier added) or by re-parsing generate_validation_structures'
+# own mp_query.chemsys (fragile -- chemsys is a Materials Project query
+# string, not guaranteed parseable the same way for every system).
+generate_isolated_elements:
+  generation_task: MACE/structures/generate_isolated_elements.py
+  generation_entry_point: generate_isolated_elements
+  generator_args:
+    elements: &target_elements [Pd, Se]
+    output_root: MACE/structures/isolated_elements
+
+# Stage: single_points_isolated_elements. Labels generate_isolated_elements'
+# own raw POSCARs with the teacher MACE model -- same gap/fix pattern as
+# single_points_validation above, for the OTHER missing prerequisite tree.
+single_points_isolated_elements:
+  structures_root: MACE/structures/isolated_elements
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace.py
+  entry_point: run_ase_single_points
+  output_root: MACE/single_points/structures/isolated_elements
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# relax_structures: ionic relaxation of every tier-1 (training +
+# validation) structure, in place. Writes properties.json/
+# rattled_properties.json/metadata.json alongside each (relaxed) POSCAR.
+relax_structures:
+  structures_root: MACE/structures
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace.py
+  entry_point: run_ase_relaxation
+  output_root: MACE/structures
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# run_md_tier1: finite-temperature MD (minimize -> 300K equilibrate ->
+# 750-1500K ramped melt), in place.
+run_md_tier1:
+  structures_root: MACE/structures
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace_md.py
+  entry_point: run_finite_temperature_md
+  output_root: MACE/structures
+  in_file: MACE/ase_inputs/in.md_tier1.json
+  finished_file: md_run.traj
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# run_single_points_tier1: single-points every extracted MD frame,
+# labeling with metadata.json (tier/stoichiometry/trajectory_id).
+run_single_points_tier1:
+  finite_temperature_structures_root: MACE/structures
+  structures_root: MACE/single_points/structures
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace.py
+  entry_point: run_ase_single_points
+  output_root: MACE/single_points/structures
+  in_file: MACE/ase_inputs/in.single_points_tier1.json
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# Tier 2: lowest-formation-energy-per-composition structures from tier 1's
+# own labeled output, isotropically rescaled, via the GENERALIZED
+# downselect_structures stage (see its own module docstring for why this
+# isn't tier-2-specific -- any already-computed MD/single-point output can
+# be screened the same way). group_by: [trajectory_id, stoichiometry]
+# reproduces the original "one winner per trajectory, then top-N per
+# composition" behavior.
+downselect_structures_tier2:
+  training_root: MACE/single_points/structures/training
+  isolated_elements_root: MACE/single_points/structures/isolated_elements
+  validation_root: MACE/single_points/structures/validation
+  output_root: MACE/structures/training_2
+  downselection_task: MACE/structures/downselect_structures.py
+  group_by: [trajectory_id, stoichiometry]
+  n_per_group: 6
+  rank_by: energy_per_atom
+  rescale_output:
+    volume_fractions: [0.95, 1.0, 1.05]
+
+run_md_tier2:
+  structures_root: MACE/structures/training_2
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace_md.py
+  entry_point: run_finite_temperature_md
+  output_root: MACE/structures/training_2
+  in_file: MACE/ase_inputs/in.md_tier2.json
+  finished_file: md_run.traj
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+run_single_points_tier2:
+  finite_temperature_structures_root: MACE/structures/training_2
+  structures_root: MACE/single_points/structures/training_2
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace.py
+  entry_point: run_ase_single_points
+  output_root: MACE/single_points/structures/training_2
+  in_file: MACE/ase_inputs/in.single_points_tier2.json
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# Tier 3: deliberately defect-substituted (far beyond physical realism)
+# supercells of EVERY validation phase found (phase_labels omitted from
+# generator_args -- generate_defect_structures.py's own default is "every
+# phase under validation_root", confirmed ALL 11 Materials Project Pd-Se
+# phases for the live project this was ported from -- deliberately NOT
+# narrowed the way tier 4's own defect axis below is; this breadth
+# difference between tier 3 (broad) and tier 4 (phase-specific) is
+# intentional, not an oversight).
+generate_structures_tier3_defect:
+  generation_task: MACE/structures/generate_defect_structures.py
+  generation_entry_point: generate_defect_structures
+  # smoke_test: 1 concentration x 1 placement x 1 volume fraction, whatever
+  # phases exist under validation_root. full: the live project's own grid.
+  generator_args_smoke_test:
+    validation_root: MACE/structures/validation
+    output_root: MACE/structures/training_3
+    concentrations: [0.15]
+    n_placements: 1
+    volume_fractions: [1.0]
+  generator_args_full:
+    validation_root: MACE/structures/validation
+    output_root: MACE/structures/training_3
+    concentrations: [0.05, 0.15, 0.30]
+    n_placements: 4
+    volume_fractions: [0.95, 1.0, 1.05]
+
+run_md_tier3:
+  structures_root: MACE/structures/training_3
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace_md.py
+  entry_point: run_finite_temperature_md
+  output_root: MACE/structures/training_3
+  in_file: MACE/ase_inputs/in.md_tier3.json
+  finished_file: md_run.traj
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# NOTE on in.single_points_tier3.json's own phase_candidates list: tier 3's
+# generator (generate_structures_tier3_defect, above) deliberately does NOT
+# set phase_labels -- it picks up "whatever real phases exist under
+# validation_root" (all of them, unlike tier 4's own narrowed 3-phase
+# scope). That makes tier 3's phase set OPEN-ENDED, depending on what your
+# own Materials Project query actually returned, not a fixed list this repo
+# can hardcode correctly for every deployment. in.single_points_tier3.json
+# currently lists the 9 phases this project's own validation query returned
+# for the Pd-Se system -- if you point this example at a different
+# validation_root (a different chemical system, or a re-run MP query that
+# returns different phases), update that list to match, or metadata.json's
+# own 'phase' field will be missing/wrong for any structure whose true
+# phase isn't in the list (see ase_mace.py's own _path_derived_metadata
+# docstring -- it raises rather than silently guessing if nothing matches).
+run_single_points_tier3:
+  finite_temperature_structures_root: MACE/structures/training_3
+  structures_root: MACE/single_points/structures/training_3
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace.py
+  entry_point: run_ase_single_points
+  output_root: MACE/single_points/structures/training_3
+  in_file: MACE/ase_inputs/in.single_points_tier3.json
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# Tier 4: phase-specific (PdSe/Pd2Se3/Pd3Se10 by default -- swap
+# phase_labels for your own target phases), two axes: defect (same
+# generator as tier 3, phase_labels-restricted) and motif (isotropic
+# stretch/compress, no defects, wider volume range than tiers 2/3 since
+# the point is covering real NPT volume excursions, not just rattling near
+# equilibrium).
+#
+# phase_labels anchored (&target_phase_labels) to the FULL label
+# _find_phase_structures actually builds (str(root.relative_to(
+# validation_root)) -- includes the trailing mp-id/"experimental" segment,
+# e.g. "Pd-Se/PdSe/mp-571383"), matching build_structural_stability_inputs'
+# own phase paths below exactly (same PdSe entry, mp-571383). CONFIRMED AS A
+# REAL BUG this session (against a real interactive allocation): a bare
+# "Pd-Se/PdSe" (no mp-id/experimental suffix, as an earlier version of this
+# file had, repeated 4x across both generators' smoke_test/full blocks)
+# never equals any real label _find_phase_structures produces, an exact-
+# match check with `label not in phase_labels` -- so EVERY phase silently
+# gets filtered out and generate_defect_structures/generate_motif_structures
+# both raise "No phase-level structure found" outright, not a partial/wrong
+# result.
+generate_structures_tier4_defect:
+  generation_task: MACE/structures/generate_defect_structures.py
+  generation_entry_point: generate_defect_structures
+  generator_args_smoke_test:
+    validation_root: MACE/structures/validation
+    output_root: MACE/structures/training_4/defect
+    phase_labels: &target_phase_labels [Pd-Se/PdSe/mp-571383, Pd-Se/Pd2Se3/experimental, Pd-Se/Pd3Se10/experimental]
+    concentrations: [0.15]
+    n_placements: 1
+    volume_fractions: [1.0]
+  generator_args_full:
+    validation_root: MACE/structures/validation
+    output_root: MACE/structures/training_4/defect
+    phase_labels: *target_phase_labels
+    concentrations: [0.05, 0.15, 0.30]
+    n_placements: 4
+    volume_fractions: [0.95, 1.0, 1.05]
+
+generate_structures_tier4_motif:
+  generation_task: MACE/structures/generate_motif_structures.py
+  generation_entry_point: generate_motif_structures
+  generator_args_smoke_test:
+    validation_root: MACE/structures/validation
+    output_root: MACE/structures/training_4/motif
+    phase_labels: *target_phase_labels
+    volume_fractions: [1.0]
+    n_seeds: 1
+  generator_args_full:
+    validation_root: MACE/structures/validation
+    output_root: MACE/structures/training_4/motif
+    phase_labels: *target_phase_labels
+    volume_fractions: [0.80, 0.90, 1.00, 1.10, 1.20]
+    n_seeds: 3
+
+# finite_temperature_md_training_4_{300,500,700,900}k: one stage per
+# temperature, not a single stage with a temperature list -- MDMatEnsemble's
+# own dispatch takes exactly one in_file per batch, and each temperature
+# needs its own output_root so re-running one never clobbers another's
+# results for the same starting structures_root (confirmed real
+# constraint, not just unported duplication -- kept as 4 stage_key variants
+# of the same generic run_md function instead of 4 separate functions).
+run_md_tier4_motif_300k:
+  structures_root: MACE/structures/training_4/motif
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace_md.py
+  entry_point: run_finite_temperature_md
+  output_root: MACE/structures/training_4/motif_300k
+  in_file: MACE/ase_inputs/in.md_tier4_motif_300k.json
+  finished_file: md_run.traj
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+run_md_tier4_motif_500k:
+  structures_root: MACE/structures/training_4/motif
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace_md.py
+  entry_point: run_finite_temperature_md
+  output_root: MACE/structures/training_4/motif_500k
+  in_file: MACE/ase_inputs/in.md_tier4_motif_500k.json
+  finished_file: md_run.traj
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+run_md_tier4_motif_700k:
+  structures_root: MACE/structures/training_4/motif
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace_md.py
+  entry_point: run_finite_temperature_md
+  output_root: MACE/structures/training_4/motif_700k
+  in_file: MACE/ase_inputs/in.md_tier4_motif_700k.json
+  finished_file: md_run.traj
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+run_md_tier4_motif_900k:
+  structures_root: MACE/structures/training_4/motif
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace_md.py
+  entry_point: run_finite_temperature_md
+  output_root: MACE/structures/training_4/motif_900k
+  in_file: MACE/ase_inputs/in.md_tier4_motif_900k.json
+  finished_file: md_run.traj
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+run_md_tier4_defect:
+  structures_root: MACE/structures/training_4/defect
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace_md.py
+  entry_point: run_finite_temperature_md
+  output_root: MACE/structures/training_4/defect
+  in_file: MACE/ase_inputs/in.md_tier4_defect.json
+  finished_file: md_run.traj
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# run_single_points_tier4: covers BOTH axes in one call
+# (unpack_trajectory_frames walks finite_temperature_structures_root
+# recursively, so one call pointed at training_4's own parent finds every
+# motif_*k/ and defect/ subtree's md_run.traj alike).
+run_single_points_tier4:
+  finite_temperature_structures_root: MACE/structures/training_4
+  structures_root: MACE/single_points/structures/training_4
+  foundation_model: *fine_tuned_mace_model
+  task_command: MACE/ase_inputs/ase_mace.py
+  entry_point: run_ase_single_points
+  output_root: MACE/single_points/structures/training_4
+  in_file: MACE/ase_inputs/in.single_points_tier4.json
+  num_tasks: 1
+  cores_per_task: 16
+  gpus_per_task: 1
+
+# Stage: build_ff_inputs -- ACE ensemble fitting over training-subset
+# combinations, see run_pipeline.py's own build_ff_inputs docstring for the
+# full design (no EFF-core change needed -- FF/subset_combination.py is
+# the only new logic, everything else reuses EnsembleFFFit.potential.ace's
+# existing write_ace_dataset/build_ace_ensemble_inputs unchanged, called
+# once per combo).
+#
+# isolated_elements_root: same prerequisite downselect_structures_tier2
+# already needs (isolated-atom E0 single-points) -- produced by
+# generate_isolated_elements/single_points_isolated_elements above.
+#
+# Smoke-test demo: 2 combos, deliberately contrasting broad/general data
+# (tier 1) against phase-specific data (tier 4) -- the real distinction
+# this whole subset-combination mechanism is for. Both combos cold-start
+# (no warm_start_potential -- there's no prior generation to warm-start
+# from in a from-scratch smoke test), fixed kappa=0.5, 2 seeds each (4
+# total ensemble members across both combos) so a smoke test runs fast.
+build_ff_inputs:
+  isolated_elements_root: MACE/single_points/structures/isolated_elements
+  validation_root: MACE/single_points/structures/validation
+  ace_inputs_dir: FF/generation_1
+  elements: *target_elements
+  structure_filename: POSCAR
+  evaluator: pyace
+  cores_per_task: 16
+  training_subsets_by_combo:
+    - label: tier1_broad
+      subsets:
+        - {tier: tier1}
+      warm_start_potential: null
+      seeds: [0, 1]
+      kappa_grid_kwargs: {kappa_range: [0.5, 0.5], kappa_num: 1}
+      total_cap: 2
+    - label: tier4_specific
+      subsets:
+        - {tier: tier4}
+      warm_start_potential: null
+      seeds: [0, 1]
+      kappa_grid_kwargs: {kappa_range: [0.5, 0.5], kappa_num: 1}
+      total_cap: 2
+
+# Stage: fit_and_validate -- submits one ACE-fitting chore per
+# (combo_label, member) folder under build_ff_inputs' own ace_inputs_dir.
+# cores_per_task: 15, not 16 -- on a single Perlmutter GPU node (64 cores,
+# 4 GPUs, 1 core reserved for the Flux broker, 63 usable), 63/16 = 3.9 ->
+# only 3 of 4 chores fit concurrently, leaving one GPU idle; 63/15 = 4.2 ->
+# all 4 fit (this smoke-test config has exactly 4 members total, 2 combos
+# x 2 seeds each).
+fit_and_validate:
+  ace_inputs_dir: FF/generation_1
+  ff_task: FF/ace_fit.py
+  entry_point: run_ace_fit
+  config: input.yaml
+  finished_file: "FF_*.yaml"
+  num_tasks: 1
+  cores_per_task: 15
+  gpus_per_task: 1
+
+# Stage: prepare_ace_validation_structures. One-time export of the real
+# validation phase structures + a training-set sanity-check sample (the
+# UNION of every combo's own training_root, see run_pipeline.py's own
+# docstring for why) into a phase-labeled POSCAR+properties.json reference
+# tree, converted to LAMMPS data format. validation_root/isolated_elements_
+# root/training_subsets_by_combo all default off build_ff_inputs above if
+# left unset here.
+prepare_ace_validation_structures:
+  validation_dest_root: MD/ace_validation/validation/lammps_inputs/structures
+  training_dest_root: MD/ace_validation/training/lammps_inputs/structures
+  lammps_recipe_source_dir: MD/ace_validation
+  lammps_recipe_files: [in.single_point_ace, lammps_ace_single_point.py]
+  training_sample_size: 1000
+  seed: 0
+
+# Stage: stage_ace_validation_force_fields. Converts+stages every combo's
+# fitted ACE potentials (from build_ff_inputs.training_subsets_by_combo,
+# inherited by default) into BOTH validation/force_fields and
+# training/force_fields below, as <combo_label>_<member>/ace.yace.
+stage_ace_validation_force_fields:
+  dest_roots:
+    - MD/ace_validation/validation/force_fields
+    - MD/ace_validation/training/force_fields
+  member_pattern: "FF_*.yaml"
+  target_name: ace.yace
+
+# Stage: ace_validation_single_points. One chore per staged potential x
+# structure.lmp, for both validation and training structure trees.
+ace_validation_single_points:
+  validation:
+    run_directory: MD/ace_validation/validation/force_fields
+    inputs_directory: MD/ace_validation/validation/lammps_inputs
+    check_files: [ffield]
+    ffield: ace.yace
+    in_file: null
+    structure: structure.lmp
+    finished_file: properties.json
+    lammps_task: lammps_ace_single_point.py
+    entry_point: run_lammps_single_points
+    parent_levels: 5
+    num_tasks: 1
+    cores_per_task: 15
+    gpus_per_task: 1
+  training:
+    run_directory: MD/ace_validation/training/force_fields
+    inputs_directory: MD/ace_validation/training/lammps_inputs
+    check_files: [ffield]
+    ffield: ace.yace
+    in_file: null
+    structure: structure.lmp
+    finished_file: properties.json
+    lammps_task: lammps_ace_single_point.py
+    entry_point: run_lammps_single_points
+    parent_levels: 5
+    num_tasks: 1
+    cores_per_task: 15
+    gpus_per_task: 1
+
+# Stage: rank_ace_validation. Calls EnsembleFFFit.analysis.best_force_field.
+# rank_force_fields_combined directly (this session's own EFF-core
+# extension) -- see run_pipeline.py's own rank_ace_validation docstring for
+# the known force-pooling-convention caveat this carries relative to the
+# companion Pd-Se pipeline's own hand-rolled version.
+rank_ace_validation:
+  validation_ff_dir: MD/ace_validation/validation/force_fields
+  validation_reference_root: MD/ace_validation/validation/lammps_inputs/reference
+  training_ff_dir: MD/ace_validation/training/force_fields
+  training_reference_root: MD/ace_validation/training/lammps_inputs/reference
+  validation_energy_weight: 1.0
+  validation_force_weight: 1.0
+  training_energy_weight: 0.0
+  training_force_weight: 0.0
+  # 'atom_component_pooled' (default) matches pyace/tensorpotential's own
+  # fitting-time test_metrics.txt pooling convention directly -- switch to
+  # 'structure_mean' only if you want this ranking's force columns to match
+  # a DIFFERENT backend's own reporting convention instead (see
+  # rank_force_fields_combined's own docstring in EnsembleFFFit).
+  force_aggregation: atom_component_pooled
+  dest_dir: MD/ace_validation/validation/force_fields
+
+# Stage: select_ace_validation_force_field. Top number_to_select (1) by
+# combined_score, via EnsembleFFFit.analysis.downselect_force_fields.
+# select_and_copy directly (see run_pipeline.py's own docstring for the
+# staged-label vs. nested-label reconciliation this needed).
+select_ace_validation_force_field:
+  ranking_csv: MD/ace_validation/validation/force_fields/ranking.csv
+  dest_root: MD/ace_validation/selected
+  number_to_select: 1
+  strategy: top
+  member_pattern: "FF_*.yaml"
+
+# ---------------------------------------------------------------------------
+# MD Validation (structural stability) -- see run_pipeline.py's own section
+# header comment for the full design and the relationship to the ReaxFF
+# example's own, different coordination-number-based structural check
+# (examples/Perlmutter/VASP_ReaxFF_LAMMPs/MD/finite_temperature/
+# coordination_check/cn_checker.py).
+# ---------------------------------------------------------------------------
+
+# Stage: build_structural_stability_inputs. Room-temperature (300K) NPT
+# structural-stability check for the 3 phases this example targets (PdSe,
+# Pd2Se3, Pd3Se10). phases point into THIS example's own
+# generate_validation_structures output (MACE/structures/validation/...,
+# written by the SAME mp_query_cli.py tool/chemsys as the companion Pd-Se
+# pipeline, just a different root) -- update these leaf names (mp-571383/
+# "experimental") if your own validation_output_root/chemsys ever differs.
+build_structural_stability_inputs:
+  dest_root: MD/structural_stability/lammps_inputs
+  phases:
+    PdSe: MACE/structures/validation/Pd-Se/PdSe/mp-571383/POSCAR
+    Pd2Se3: MACE/structures/validation/Pd-Se/Pd2Se3/experimental/POSCAR
+    Pd3Se10: MACE/structures/validation/Pd-Se/Pd3Se10/experimental/POSCAR
+  supercell_kwargs:
+    min_atoms: 3000
+    min_length: 20.0
+  replicates: 3
+  seed: 0
+  room_temperature_K: 300
+  timestep_fs: 1.0
+  temp_damp_steps: 100
+  press_damp_steps: 1000
+  thermo_freq: 100
+  dump_freq: 100
+  # PLACEHOLDERS -- re-tune once a real per-step Kokkos/ACE GPU timing
+  # number is in hand for a ~3000-atom cell on your own system; don't trust
+  # these blindly (see build_structural_stability_inputs' own docstring in
+  # the companion pipeline for the same caveat there).
+  equilibration_steps: 5000
+  production_steps: 20000
+
+# Stage: stage_structural_stability_force_fields. One best-by-validation
+# member per training-subset combo (see rank_ace_validation's own
+# ranking.csv) -- update these {source, label} entries to match YOUR OWN
+# actual ranking once real validation has run; the two placeholder entries
+# below (member "0" of each of this example's 2 smoke-test combos) are
+# illustrative, not a real selection.
+stage_structural_stability_force_fields:
+  members:
+    - {source: FF/generation_1/tier1_broad/0/FF_0.yaml, label: tier1_broad}
+    - {source: FF/generation_1/tier4_specific/0/FF_0.yaml, label: tier4_specific}
+  dest_roots:
+    - MD/structural_stability/force_fields
+  target_name: ace.yace
+
+# Stage: structural_stability_screening. parent_levels has no hardcoded
+# default in run_pipeline.py deliberately -- confirm via a real
+# MDMatEnsemble.build_task_dicts dry run against your own actually-staged
+# tree before running for real (see structural_stability_screening's own
+# docstring in run_pipeline.py); 2 is the companion pipeline's own
+# confirmed value for the same tree shape (no T<temp>K segment), not
+# blindly assumed here either.
+structural_stability_screening:
+  run_directory: MD/structural_stability/force_fields
+  inputs_directory: MD/structural_stability/lammps_inputs
+  check_files: [ffield]
+  ffield: ace.yace
+  in_file: in.structural_stability
+  structure: structure.lmp
+  finished_file: properties.json
+  lammps_task: MD/structural_stability/lammps_ace_structural_stability.py
+  entry_point: run_structural_stability
+  parent_levels: 2
+  num_tasks: 1
+  cores_per_task: 15
+  gpus_per_task: 1
+
+# Stage: check_structural_stability. stability_task/entry_point dynamically
+# imported (config-swappable) -- point this at a different structural
+# metric, or the ReaxFF precedent's own coordination-number-based check
+# adapted to this example, as a config change, not a run_pipeline.py one.
+check_structural_stability:
+  stability_task: MD/structural_stability/structural_stability_checker.py
+  entry_point: check_structural_stability
+  run_directory: MD/structural_stability/force_fields
+  inputs_directory: MD/structural_stability/lammps_inputs
+  structure_filename: structure.lmp
+  csv_path: MD/structural_stability/force_fields/structural_stability_summary.csv
+  equilibrium_window_fraction: 0.2
+  rdf_cutoff: 10.0
+  rdf_bins: 200
+  rdf_far_fraction: 0.3
+  msd_fit_fraction: 0.5
+  dump_interval_ps: 0.1
+  # RECALIBRATE for your own system -- these were fit to the companion
+  # pipeline's own real PdSe/Pd2Se3/Pd3Se10 MSD-slope distribution (see
+  # structural_stability_checker.py's own docstring in that project for
+  # the full story), not a universal default.
+  diffusive_slope_threshold: 0.2
+  diffusive_r_squared_threshold: 0.95
+
+# Stage: stage_mace_reference_force_field. source_model is the SAME path
+# as teacher_preparation.source_model above -- reuses that stage's own
+# already-converted output (see run_pipeline.py's own docstring) rather
+# than re-running mace_create_lammps_model.
+stage_mace_reference_force_field:
+  source_model: *fine_tuned_mace_model
+  label: MACE_reference
+  target_name: model-mliap_lammps.pt
+  dest_roots:
+    - MD/structural_stability/force_fields
+
+# Stage: mace_structural_stability_screening. Same protocol/structures/
+# replicate seeds as structural_stability_screening, pair_style mliap
+# unified instead of pace -- 1 potential x 3 phases x 3 replicates = 9 runs.
+# parent_levels needs its own dry-run confirmation too (see that stage's
+# own comment) -- only 1 potential label here instead of 2, which can
+# change which depth level groups chores sensibly.
+mace_structural_stability_screening:
+  run_directory: MD/structural_stability/force_fields
+  inputs_directory: MD/structural_stability/lammps_inputs
+  check_files: [ffield]
+  ffield: model-mliap_lammps.pt
+  in_file: in.structural_stability_mace
+  structure: structure.lmp
+  finished_file: properties.json
+  lammps_task: MD/structural_stability/lammps_mace_structural_stability.py
+  entry_point: run_mace_structural_stability
+  parent_levels: 2
+  num_tasks: 1
+  cores_per_task: 15
+  gpus_per_task: 1

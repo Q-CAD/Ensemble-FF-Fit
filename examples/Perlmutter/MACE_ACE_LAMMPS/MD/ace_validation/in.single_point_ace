@@ -1,0 +1,49 @@
+# ACE single-point LAMMPS/pair_style-pace evaluation -- analogous to the
+# VASP_ReaxFF_LAMMPs example's own in.single_point, but for ACE instead of
+# ReaxFF: units metal (CONFIRMED required -- pair_pace.cpp itself rejects
+# any other units directive, "ACE potentials require 'metal' units"),
+# atom_style atomic (no charges/qeq fix -- ACE has no charge-equilibration
+# step at all, unlike ReaxFF), no cell minimization (`run 0` evaluates the
+# structure exactly as read, matching pyace's own PyACECalculator never
+# relaxing before get_potential_energy()/get_forces(), so FF-vs-reference
+# comparisons stay apples-to-apples).
+#
+# Deliberately does NOT use the /kk Kokkos-suffixed pair_style directly --
+# lammps_ace_single_point.py activates Kokkos via LAMMPS's own `-sf kk`
+# command-line suffix instead (auto-appends /kk to pair_style/etc.), so this
+# same .in file works for both the Kokkos-GPU chore this was written for and
+# a plain-CPU run (e.g. for local debugging) without editing it.
+#
+# `pace product` (not bare `pace`, and not `pace recursive`) -- CONFIRMED
+# (2026-10-13) via a real GPU allocation: pair_pace_kokkos.cpp's own
+# coeff()/compute() REQUIRES the product algorithm on the GPU ("Must use
+# 'product' algorithm with pair pace/kk on the GPU") and errors otherwise --
+# this was missed in the original smoke test, which only ever exercised
+# plain CPU `pair_style pace` (no GPU available on the login node to catch
+# this). `product` is also valid on CPU (LAMMPS's own
+# examples/PACKAGES/pace/in.pace.product), so this one spelling works for
+# both Kokkos-GPU and plain-CPU runs without a conditional.
+#
+# Variables (ff_filename, structure, elements) are set by
+# lammps_ace_single_point.py via `lmp.command("variable ... string ...")`
+# before this file is loaded via `lmp.file(...)`.
+
+units metal
+dimension 3
+boundary p p p
+atom_style atomic
+box tilt large
+processors * * *
+newton on
+neighbor 2.0 bin
+neigh_modify every 1 delay 0 check yes
+
+read_data ${structure}
+
+pair_style pace product
+pair_coeff * * ${ff_filename} ${elements}
+
+thermo 1
+thermo_style custom step temp pe epair etotal press pxx pyy pzz lx ly lz vol density
+
+run 0

@@ -1,0 +1,138 @@
+FROM docker.io/nersc/flux:26.05
+
+# Same base/MatEnsemble install as examples/Perlmutter/VASP_ReaxFF_LAMMPs/
+# Dockerfile.ff-fit and VASP_MACE_ASE/Dockerfile.mace. LAMMPS itself (with
+# ML-PACE for ACE and Kokkos-GPU) is NOT installed here -- it ships already
+# built into this base image (confirmed: no LAMMPS-related install step
+# exists in any of this project's own Dockerfiles, including the live
+# Pd-Se pipeline's Dockerfile.matensemble this one is adapted from).
+# Ensemble-FF-Fit itself isn't installed here: launch_multi_node.slurm puts
+# the repo checkout on PYTHONPATH at invocation time, so only its
+# dependencies are baked into the image (a user is expected to iterate on
+# EnsembleFFFit itself without rebuilding). TensorPotential (the GPU/
+# TensorFlow evaluator ACE fitting delegates to via `evaluator: tensorpot`)
+# IS pip-installed below, fixed at a tag -- this pipeline uses it as a
+# library, not something a user needs to patch locally, so baking it in
+# avoids the PYTHONPATH-injection/env-var confusion a separate checkout
+# would otherwise need. See this example's README for why upstream
+# `ICAMS/TensorPotential` won't install here at all.
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ENV PATH=/opt/basic/bin:$PATH
+
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-dev libglu1-mesa-dev mesa-utils
+
+# clone MatEnsemble
+WORKDIR /opt
+RUN git clone --depth 1 https://github.com/Q-CAD/MatEnsemble.git matensemble && \
+    cd matensemble && \
+    uv export --format requirements.txt --no-hashes --no-emit-project --output-file requirements.txt && \
+    /opt/basic/bin/python -m pip install -r requirements.txt && \
+    /opt/basic/bin/python -m pip install --no-deps .
+
+# CUDA torch before mace-torch, so pip never resolves a different torch
+# build for it. Installed directly here (NOT via Ensemble-FF-Fit's own
+# install_gpu_torch.py, unlike the live Pd-Se pipeline's own
+# Dockerfile.matensemble this is otherwise adapted from) -- that script
+# lives at the top of the Ensemble-FF-Fit repo, one level above every
+# example's own build context, so it can't be COPY'd in from here without
+# building with a non-standard context; VASP_MACE_ASE/Dockerfile.mace
+# solves the same problem the same way, confirmed by reading it.
+# cuda12.6 matches the live Pd-Se pipeline's own choice -- cross-check
+# against `nvidia-smi`'s reported CUDA version once inside a real GPU
+# allocation and adjust the index URL if it disagrees.
+RUN /opt/basic/bin/python -m pip install \
+    torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu126
+
+# MACE (the teacher potential's own format) + its CUDA tensor-product
+# accelerator (mace/cuda extras).
+RUN /opt/basic/bin/python -m pip install \
+    "mace-torch" \
+    "cuequivariance>0.6.0" \
+    "cuequivariance-torch>0.6.0" \
+    "cuequivariance-ops-torch-cu12>0.6.0"
+
+# Fail the build (not the first chore) if torch isn't actually the CUDA
+# build, or MACE can't import against it -- same guard VASP_MACE_ASE/
+# Dockerfile.mace uses, confirmed worth keeping (catches a silent CPU-torch
+# resolution early rather than at first real fit).
+RUN /opt/basic/bin/python -c "import torch, mace, cuequivariance_torch; assert torch.version.cuda, torch.__version__; print(torch.__version__, torch.version.cuda)"
+
+# ACE (pyace/pacemaker, `ace` extra) -- compiles native CMake C++ extensions
+# (plus a Cython-built maxvolpy sub-library) at install time; capping
+# parallelism avoids the "cc1plus: out of memory" failure already seen with
+# this build's own default `os.cpu_count() - 1` job count on a shared/
+# memory-constrained host (see Ensemble-FF-Fit/pyproject.toml's `ace` extra
+# comment).
+#
+# PINNED (not the live pipeline's own unpinned `git+https://...python-ace.git`)
+# to commit 66c35ea6e5dbed2857d423952b922183206c140e
+# (pyace 0.2.7+192.g66c35ea) -- the exact revision confirmed, by direct
+# inspection of a real running container this session, to already be what
+# every fit in this project has been validated against, including with the
+# numpy-2.x-compatible TensorPotential fix (see the README's pitfalls
+# section). Re-pin deliberately, with a fresh validation pass, rather than
+# bumping opportunistically -- python-ace has no PyPI release and no
+# guarantee of API stability between commits.
+RUN CMAKE_BUILD_PARALLEL_LEVEL=2 /opt/basic/bin/python -m pip install \
+    "pyace @ git+https://github.com/ICAMS/python-ace.git@66c35ea6e5dbed2857d423952b922183206c140e"
+
+# TensorPotential (pacemaker's GPU/TensorFlow evaluator, `evaluator:
+# tensorpot` in workflow_config.yaml) -- pip-installed FIXED (no -e), per
+# explicit project decision: this pipeline uses it as a plain library, not
+# something a user needs to patch locally, so there's no reason to carry
+# the PYTHONPATH-injection/env-var indirection a separate checkout would
+# need. Installed from Q-CAD's own fork, NOT upstream `ICAMS/TensorPotential`
+# -- upstream's setup.py pins `python_requires='<3.11'` (this image is
+# Python 3.12) and `numpy<=1.26.4`/`pandas<=2.0` (this image's numpy is 2.x
+# -- TensorFlow, which `evaluator: tensorpot` actually needs at runtime,
+# ships pre-installed in the `nersc/flux:26.05` base image itself, not
+# installed by any RUN step in this file; confirmed via a running
+# container: TF 2.21.0, pulling in numpy 2.4.3), and genuinely refuses to
+# install here
+# (confirmed directly: `pip install` fails outright with "Package
+# 'tensorpotential' requires a different Python: 3.12.3 not in '<3.11'").
+# The Q-CAD fork (develop branch, tagged here at v0.1.1-qcad1) carries two
+# fixes on top of upstream: a numpy-2.x compatibility fix in
+# FitMetrics.get_regularization_loss, and this setup.py relaxation itself --
+# both ASL-licensed same as upstream, see the fork's own commit history.
+# --no-deps: its install_requires (scipy/tensorflow/numpy/pandas/ase) are
+# already satisfied above by this image's own pinned versions; letting pip
+# resolve them here risks it silently swapping one of those for an
+# incompatible version.
+RUN /opt/basic/bin/python -m pip install --no-deps \
+    "tensorpotential @ git+https://github.com/Q-CAD/TensorPotential.git@v0.1.1-qcad1"
+
+# Structure generation (pyxtal, training-data-generation Stage 1's
+# synthetic-composition structures). pyscal3 (Steinhardt-order-parameter/
+# clustering analysis) is deliberately NOT installed here -- it exists only
+# to support the large-cell recrystallization-search stage, which this
+# example does not include (see README).
+RUN /opt/basic/bin/python -m pip install \
+    "pyxtal @ git+https://github.com/MaterSim/PyXtal.git"
+
+# ovito (RadialDistributionFunctionModifier) -- needed ONLY by this
+# example's own MD/structural_stability/structural_stability_checker.py
+# (RDF long-range-peak retention signal), pinned to 3.15.0 (confirmed this
+# exact version is what's actually installed and working in the companion
+# Pd-Se pipeline's own container). Deliberately installed HERE, in this
+# example's own Dockerfile, not added to Ensemble-FF-Fit's own base
+# dependencies below -- EFF core supports multiple FF backends and
+# shouldn't carry a dependency only one example's own structural check
+# needs (explicit user decision, this project).
+RUN /opt/basic/bin/python -m pip install "ovito==3.15.0"
+
+# EnsembleFFFit's own base dependencies (Ensemble-FF-Fit/pyproject.toml's
+# unconditional `dependencies = [...]` block, minus `matensemble` -- already
+# satisfied by the git-cloned/pip-installed copy above). Needed even though
+# EnsembleFFFit itself is never pip-installed (see comment above) --
+# PYTHONPATH injection makes `import EnsembleFFFit` resolve, but does
+# nothing about what EnsembleFFFit's own modules import internally
+# (`dict_parsers`/`downselect_force_fields`/mp_query_cli/etc. all pull in
+# pymatgen, mp-api, ase, matminer, ...).
+RUN /opt/basic/bin/python -m pip install \
+    pymatgen pymatgen-analysis-defects mp-api ase numpy scipy \
+    matminer scikit-learn pyarrow tqdm pyyaml

@@ -1,0 +1,16 @@
+{
+    "high_temperature": 300,
+    "low_temperature": 300,
+    "nsteps": 1000,
+    "frequency": 200,
+    "friction": 0.05,
+    "timestep": 1.0,
+    "fmax": 0.05,
+    "optsteps": 200,
+    "cycles": 1,
+    "defect_prob": 0.0,
+    "max_energy_deviation_per_atom": 5.0,
+    "supercell_max_atoms": 100,
+    "constant_volume": true,
+    "metadata": {"tier": "training_4", "md_type": "motif", "temperature": 300}
+}
