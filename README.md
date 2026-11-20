@@ -3,7 +3,7 @@
 
 This package allows **data** and **time efficient fine-tuning of physics-based as well as machine-learning interatomic potentials (MLIPS)**, including universal MLIPs, by using an ensemble approach to fit MLIPs to ab initio data using adaptive asynchronous job scheduling while incorporating UQ on-the-fly. to generate new training data to improve the force-fields. 
 
-MatEnsemble is used to perform adaptive asynchronous job scheduling. DFT convergence is driven the same
+**MatEnsemble**(https://matensemble.readthedocs.io/en/latest/) is used to perform adaptive asynchronous job scheduling. DFT convergence is driven the same
 way -- via RMG (PyRMG, https://github.com/RMGDFT/rmgdft), VASP, or Quantum Espresso, depending on the
 example.
 
